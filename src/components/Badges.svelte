@@ -1,6 +1,8 @@
 <script>
   export let badges = []; 
 
+  const BASE = import.meta.env.BASE_URL;
+
   const badgeMeta = [
     {
         badge: "Grand Slam",
@@ -83,7 +85,7 @@
       {#each items as item}
         <td class="image-cell tooltip-container">
 
-          <img src={item.img} alt={item.badge} class="badge-img" />
+          <img src={BASE + item.img} alt={item.badge} class="badge-img" />
 
           <!-- Tooltip -->
           <div class="tooltip">
