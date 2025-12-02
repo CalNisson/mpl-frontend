@@ -104,7 +104,7 @@
   {:else if dashboard}
     <div class="grid-2" style="margin-bottom: 1rem;">
       <SeasonOverview {dashboard} />
-      <PokemonLeaderboard stats={dashboard.pokemon_stats} />
+      <PokemonLeaderboard stats={dashboard?.pokemonStats} />
     </div>
 
     {#if !loading && dashboard}
