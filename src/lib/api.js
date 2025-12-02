@@ -1,7 +1,7 @@
 // src/lib/api.js
 
 // You can override this with VITE_API_BASE_URL in a .env file if you want.
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000';
 
 async function handle(res) {
   if (!res.ok) {
