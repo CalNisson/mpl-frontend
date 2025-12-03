@@ -15,6 +15,16 @@
   let error = '';
   let seasonBadges = [];
 
+  $: hasPlayins =
+    !!dashboard &&
+    Array.isArray(dashboard.matches) &&
+    dashboard.matches.some((m) => m.is_playins);
+
+  $: hasPlayoffs =
+    !!dashboard &&
+    Array.isArray(dashboard.matches) &&
+    dashboard.matches.some((m) => m.is_playoff);
+
   // 👇 ref and height for the standings card
   let standingsContainer;
   let matchesMaxHeight = 0;
@@ -132,13 +142,28 @@
       />
     </div>
 
-    <div class="playoffs-section">
-      <PlayoffsBracket
-        matches={dashboard.matches}
-        matchGames={dashboard.matchGames}
-        teams={dashboard.teams}
-      />
-    </div>
+    {#if hasPlayins || hasPlayoffs}
+      <div class="playoffs-section">
+        {#if hasPlayins}
+          <PlayoffsBracket
+            phase="playins"
+            matches={dashboard.matches}
+            matchGames={dashboard.matchGames}
+            teams={dashboard.teams}
+            style="margin-bottom: 1.5rem;"
+          />
+        {/if}
+
+        {#if hasPlayoffs}
+          <PlayoffsBracket
+            phase="playoffs"
+            matches={dashboard.matches}
+            matchGames={dashboard.matchGames}
+            teams={dashboard.teams}
+          />
+        {/if}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -152,24 +177,21 @@
     background: #050813;
   }
 
-  /* helps ensure columns don’t try to stretch vertically in weird ways */
   .grid-2 {
     align-items: flex-start;
   }
 
   .playoffs-section {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
     margin-top: 1.5rem;
     margin-bottom: 1.5rem;
-
-    /* Ensures the bracket does not stretch the content grid */
     width: 100%;
   }
 
-  /* Optional: limit bracket width to match the app shell */
   .playoffs-section > * {
-    max-width: 1200px;   /* or whatever your app-shell is using */
+    max-width: 1200px;
     width: 100%;
   }
 </style>

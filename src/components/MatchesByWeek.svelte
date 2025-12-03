@@ -1,7 +1,7 @@
 <script>
   export let matches = [];
   export let matchGames = [];
-  export let maxHeight = 0; // 👈 new
+  export let maxHeight = 0;
 
   // Attach games to matches by match_id
   $: gamesByMatchId = matchGames.reduce((acc, g) => {
@@ -17,7 +17,9 @@
   }));
 
   // Split regular season vs playoffs
-  $: regularSeasonMatches = enrichedMatches.filter((m) => !m.is_playoff);
+  $: regularSeasonMatches = enrichedMatches.filter(
+    (m) => !m.is_playoff && !m.is_playins
+  );
 
   // Group regular season by week
   $: matchesByWeek = regularSeasonMatches.reduce((acc, m) => {

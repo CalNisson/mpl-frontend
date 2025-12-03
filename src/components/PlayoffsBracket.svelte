@@ -2,15 +2,16 @@
   // Props from parent
   export let matches = [];
   export let matchGames = [];
-  export let teams = []; // now actually used for seeding
+  export let teams = [];
+  export let phase = 'playoffs';
 
   // ----- Layout constants -----
-  const MATCH_WIDTH = 260;           // wider to fit full names
-  const HORIZONTAL_GAP_X = 80;       // horizontal space between rounds
+  const MATCH_WIDTH = 260;
+  const HORIZONTAL_GAP_X = 80;
   const ROUND_GAP_X = MATCH_WIDTH + HORIZONTAL_GAP_X;
 
-  const MATCH_HEIGHT_EST = 90;       // estimated box height (must roughly match CSS)
-  const MATCH_GAP_Y = 40;            // vertical gap between boxes
+  const MATCH_HEIGHT_EST = 90;
+  const MATCH_GAP_Y = 40;
   const LEFT_MARGIN = 80;
   const TOP_MARGIN = 60;
 
@@ -25,13 +26,20 @@
 
   // ----- Helpers -----
 
-  function getPlayoffFlag(m) {
-    return Boolean(m.is_playoff);
-  }
+    function getPhaseFlag(m) {
+        if (phase === 'playins') {
+        return Boolean(m.is_playins);
+        }
+        // default: playoffs
+        return Boolean(m.is_playoff);
+    }
 
-  function getPlayoffRoundLabel(m) {
-    return m.playoff_round ?? "Round 1";
-  }
+    function getPhaseRoundLabel(m) {
+        if (phase === 'playins') {
+        return m.playins_round ?? "Round 1";
+        }
+        return m.playoff_round ?? "Round 1";
+    }
 
   function isThirdPlaceLabel(label) {
     const lower = (label || "").toLowerCase();
@@ -244,14 +252,14 @@
   }
 
   function buildRoundsFromBackend(matches, matchGames) {
-    const playoffMatches = matches.filter((m) => getPlayoffFlag(m));
-    if (!playoffMatches.length) return { rounds: [] };
+    const phaseMatches = matches.filter((m) => getPhaseFlag(m));
+    if (!phaseMatches.length) return { rounds: [] };
 
-    const playoffMatchIds = new Set(playoffMatches.map((m) => m.id));
+    const phaseMatchIds = new Set(phaseMatches.map((m) => m.id));
     const gamesByMatch = new Map();
 
     matchGames.forEach((g) => {
-      if (!playoffMatchIds.has(g.match_id)) return;
+      if (!phaseMatchIds.has(g.match_id)) return;
       const key = g.match_id;
       const existing = gamesByMatch.get(key) ?? [];
       existing.push(g);
@@ -259,8 +267,8 @@
     });
 
     const grouped = new Map(); // roundLabel -> [matches]
-    playoffMatches.forEach((m) => {
-      const label = getPlayoffRoundLabel(m);
+    phaseMatches.forEach((m) => {
+      const label = getPhaseRoundLabel(m);
       const arr = grouped.get(label) ?? [];
       arr.push(m);
       grouped.set(label, arr);
@@ -657,9 +665,13 @@
 
 
 <div class="bracket-wrapper">
-  <h2>Playoffs Bracket</h2>
+  <h2>{phase === 'playins' ? 'Playins Bracket' : 'Playoffs Bracket'}</h2>
   {#if !rounds.length}
-    <div class="no-playoffs">No playoff matches found for this season.</div>
+    <div class="no-playoffs">
+      {phase === 'playins'
+        ? 'No playins matches found for this season.'
+        : 'No playoff matches found for this season.'}
+    </div>
   {:else}
     <div
       class="bracket-container"
