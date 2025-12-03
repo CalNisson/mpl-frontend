@@ -16,7 +16,7 @@
     games: gamesByMatchId[m.id] ?? [],
   }));
 
-  // Split regular season vs playoffs
+  // Split regular season vs playoffs + playins
   $: regularSeasonMatches = enrichedMatches.filter(
     (m) => !m.is_playoff && !m.is_playins
   );
@@ -46,7 +46,9 @@
 
 <div
   class="card matches-card"
-  style={maxHeight ? `max-height:${maxHeight}px; overflow-y:auto;` : ''}
+  style={maxHeight
+    ? `max-height:${maxHeight}px; overflow-y:auto; overflow-x:hidden;`
+    : 'overflow-x:hidden;'}
 >
   <div class="card-header">
     <div class="card-title">Matches</div>
@@ -54,49 +56,60 @@
 
   {#if matches.length === 0}
     <div class="muted">No matches recorded for this season.</div>
-  {:else}
-    {#if regularSeasonMatches.length > 0}
-      <div style="margin-bottom: 1rem;">
-        {#each Object.keys(matchesByWeek).sort((a, b) => Number(a) - Number(b)) as week}
-          <div style="margin-bottom: 0.5rem;">
-            <div class="section-title">Week {week}</div>
-            <table class="table">
-              <thead>
+  {:else if regularSeasonMatches.length > 0}
+    <div style="margin-bottom: 1rem;">
+      {#each Object.keys(matchesByWeek).sort((a, b) => Number(a) - Number(b)) as week}
+        <div style="margin-bottom: 0.5rem;">
+          <div class="section-title">Week {week}</div>
+          <table class="table matches-table">
+            <thead>
+              <tr>
+                <th>Match</th>
+                <th>Score</th>
+                <th>Winner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each matchesByWeek[week] as m}
                 <tr>
-                  <th>Match</th>
-                  <th>Score</th>
-                  <th>Winner</th>
+                  <td>{m.team1_name} vs {m.team2_name}</td>
+                  <td>
+                    {#each getGameScores(m) as g}
+                      <div>
+                        {#if m.games && m.games.length > 0}
+                          <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
+                        {/if}
+                        <span>{g.score}</span>
+                      </div>
+                    {/each}
+                  </td>
+                  <td>{m.winner_team_name}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {#each matchesByWeek[week] as m}
-                  <tr>
-                    <td>{m.team1_name} vs {m.team2_name}</td>
-                    <td>
-                      {#each getGameScores(m) as g}
-                        <div>
-                          {#if m.games && m.games.length > 0}
-                            <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
-                          {/if}
-                          <span>{g.score}</span>
-                        </div>
-                      {/each}
-                    </td>
-                    <td>{m.winner_team_name}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/each}
-      </div>
-    {/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 
 <style>
   .matches-card {
-    /* ensure padding doesn’t get cropped weirdly at bottom */
     box-sizing: border-box;
+    /* vertical scroll only on this card; no horizontal scrollbar */
+    overflow-x: hidden;
+  }
+
+  /* let the table take full card width and wrap naturally */
+  .matches-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .matches-table th,
+  .matches-table td {
+    /* allow wrapping, no ellipsis */
+    white-space: normal;
   }
 </style>

@@ -1,6 +1,6 @@
 <script>
   export let teams = [];
-  export let matches = [];      // needed so we know which matches are playoffs
+  export let matches = [];      // needed so we know which matches are playoffs/playins
   export let matchGames = [];   // individual game results
 
   // 1) Filter teams that have a placement (only show finalized standings)
@@ -8,13 +8,19 @@
     (t) => t.placement !== null && t.placement !== undefined
   );
 
-  // 2) Build a Set of playoff match_ids to EXCLUDE from diff calc
-  $: playoffMatchIds = new Set(
-    matches.filter((m) => m.is_playoff).map((m) => m.id)
+  // 2) Build a Set of *postseason* match_ids (playoffs + playins) to EXCLUDE from diff calc
+  $: excludedMatchIds = new Set(
+    matches
+      .filter((m) => m.is_playoff || m.is_playins)
+      .map((m) => m.id)
   );
 
+  // Helper: does this season actually have any matchGames rows?
+  $: hasMatchGames = Array.isArray(matchGames) && matchGames.length > 0;
+
   // 3) Compute running differential for each team (regular season only)
-  //    This mirrors your "previous working counts" logic, just skipping playoffs.
+  //    - If we have matchGames → use per-game logic (best-of handling)
+  //    - If we don't → fall back to the matches table
   $: differentialMap = (() => {
     const diff = {};
 
@@ -24,28 +30,53 @@
       diff[team.id] = 0;
     }
 
-    for (const g of matchGames) {
-      // ignore playoff games
-      if (playoffMatchIds.has(g.match_id)) continue;
+    if (hasMatchGames) {
+      // ---- CASE A: Use matchGames (per-game differential) ----
+      for (const g of matchGames) {
+        // ignore postseason games (playoffs + playins)
+        if (excludedMatchIds.has(g.match_id)) continue;
 
-      // find the match so we know which team was team1 / team2
-      const match = matches.find((m) => m.id === g.match_id);
-      if (!match) continue;
+        // find the match so we know which team was team1 / team2
+        const match = matches.find((m) => m.id === g.match_id);
+        if (!match) continue;
 
-      const t1 = teams.find((t) => t.team_name === match.team1_name);
-      const t2 = teams.find((t) => t.team_name === match.team2_name);
-      if (!t1 || !t2) continue;
+        const t1 = teams.find((t) => t.team_name === match.team1_name);
+        const t2 = teams.find((t) => t.team_name === match.team2_name);
+        if (!t1 || !t2) continue;
 
-      // scoring:
-      // winner gains their score, loser loses winner's score
-      if (g.team1_score > g.team2_score) {
-        diff[t1.id] += g.team1_score;       // winner
-        diff[t2.id] -= g.team1_score;       // loser loses winner's score
-      } else if (g.team2_score > g.team1_score) {
-        diff[t2.id] += g.team2_score;       // winner
-        diff[t1.id] -= g.team2_score;       // loser loses winner's score
+        // scoring:
+        // winner gains their score, loser loses winner's score
+        if (g.team1_score > g.team2_score) {
+          diff[t1.id] += g.team1_score;       // winner
+          diff[t2.id] -= g.team1_score;       // loser loses winner's score
+        } else if (g.team2_score > g.team1_score) {
+          diff[t2.id] += g.team2_score;       // winner
+          diff[t1.id] -= g.team2_score;       // loser loses winner's score
+        }
+        // ties: no change
       }
-      // ties: no change
+    } else {
+      // ---- CASE B: No matchGames → use matches table directly ----
+      for (const m of matches) {
+        // ignore postseason (playoffs + playins)
+        if (excludedMatchIds.has(m.id)) continue;
+
+        const t1 = teams.find((t) => t.team_name === m.team1_name);
+        const t2 = teams.find((t) => t.team_name === m.team2_name);
+        if (!t1 || !t2) continue;
+
+        const s1 = m.team1_score ?? 0;
+        const s2 = m.team2_score ?? 0;
+
+        if (s1 > s2) {
+          diff[t1.id] += s1;   // winner
+          diff[t2.id] -= s1;   // loser loses winner's score
+        } else if (s2 > s1) {
+          diff[t2.id] += s2;   // winner
+          diff[t1.id] -= s2;   // loser loses winner's score
+        }
+        // ties: no change
+      }
     }
 
     return diff;

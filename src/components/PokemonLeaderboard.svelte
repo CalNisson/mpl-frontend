@@ -46,6 +46,10 @@
       return `${rest}-mega`;
     }
 
+    if(n.startsWith('minior')) {
+      return 'minior-red-meteor';
+    }
+
     // Regional forms: "Alolan Ninetales" -> "ninetales-alola"
     const formPrefixes = [
       ['alolan ', '-alola'],
