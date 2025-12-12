@@ -32,3 +32,13 @@ export async function getCoaches(leagueType = "major") {
   if (!res.ok) throw new Error(await res.text());
   return await res.json();
 }
+
+export async function getPokemonCareerStats() {
+  const res = await fetch(`${API_BASE}/pokemon/stats`);
+  return handle(res);
+}
+
+export async function runPokemonStatsRollup() {
+  const res = await fetch(`${API_BASE}/pokemon/stats/run`);
+  return handle(res);
+}

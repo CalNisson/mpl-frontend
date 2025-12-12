@@ -19,6 +19,7 @@
     <nav class="tabs">
       <a href="#/" use:link class:active={path === "/"}>Seasons</a>
       <a href="#/coaches" use:link class:active={path === "/coaches"}>Coaches</a>
+      <a href="#/pokemon" use:link class:active={path === "/pokemon"}>Pokémon</a>
     </nav>
   </header>
 
