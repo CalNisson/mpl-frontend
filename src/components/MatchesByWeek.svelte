@@ -16,16 +16,27 @@
     games: gamesByMatchId[m.id] ?? [],
   }));
 
-  // Split regular season vs playoffs + playins
+  // Split into regular season, play-ins, playoffs
   $: regularSeasonMatches = enrichedMatches.filter(
     (m) => !m.is_playoff && !m.is_playins
   );
+
+  $: playinsMatches = enrichedMatches.filter((m) => m.is_playins);
+  $: playoffMatches = enrichedMatches.filter((m) => m.is_playoff);
 
   // Group regular season by week
   $: matchesByWeek = regularSeasonMatches.reduce((acc, m) => {
     const week = m.week ?? '-';
     if (!acc[week]) acc[week] = [];
     acc[week].push(m);
+    return acc;
+  }, {});
+
+  // Group playoff matches by playoff_round (Quarterfinals, Semifinals, etc.)
+  $: playoffsByRound = playoffMatches.reduce((acc, m) => {
+    const round = m.playoff_round ?? 'Playoffs';
+    if (!acc[round]) acc[round] = [];
+    acc[round].push(m);
     return acc;
   }, {});
 
@@ -56,41 +67,116 @@
 
   {#if matches.length === 0}
     <div class="muted">No matches recorded for this season.</div>
-  {:else if regularSeasonMatches.length > 0}
-    <div style="margin-bottom: 1rem;">
-      {#each Object.keys(matchesByWeek).sort((a, b) => Number(a) - Number(b)) as week}
-        <div style="margin-bottom: 0.5rem;">
-          <div class="section-title">Week {week}</div>
-          <table class="table matches-table">
-            <thead>
-              <tr>
-                <th>Match</th>
-                <th>Score</th>
-                <th>Winner</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each matchesByWeek[week] as m}
+  {:else}
+    <!-- Regular Season (by week) -->
+    {#if regularSeasonMatches.length > 0}
+      <div style="margin-bottom: 1rem;">
+        {#each Object.keys(matchesByWeek).sort((a, b) => Number(a) - Number(b)) as week}
+          <div style="margin-bottom: 0.5rem;">
+            <div class="section-title">Week {week}</div>
+            <table class="table matches-table">
+              <thead>
                 <tr>
-                  <td>{m.team1_name} vs {m.team2_name}</td>
-                  <td>
-                    {#each getGameScores(m) as g}
-                      <div>
-                        {#if m.games && m.games.length > 0}
-                          <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
-                        {/if}
-                        <span>{g.score}</span>
-                      </div>
-                    {/each}
-                  </td>
-                  <td>{m.winner_team_name}</td>
+                  <th>Match</th>
+                  <th>Score</th>
+                  <th>Winner</th>
                 </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      {/each}
-    </div>
+              </thead>
+              <tbody>
+                {#each matchesByWeek[week] as m}
+                  <tr>
+                    <td>{m.team1_name} vs {m.team2_name}</td>
+                    <td>
+                      {#each getGameScores(m) as g}
+                        <div>
+                          {#if m.games && m.games.length > 0}
+                            <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
+                          {/if}
+                          <span>{g.score}</span>
+                        </div>
+                      {/each}
+                    </td>
+                    <td>{m.winner_team_name}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Play-ins section -->
+    {#if playinsMatches.length > 0}
+      <div style="margin-bottom: 1rem;">
+        <div class="section-title">Play-ins</div>
+        <table class="table matches-table">
+          <thead>
+            <tr>
+              <th>Match</th>
+              <th>Score</th>
+              <th>Winner</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each playinsMatches as m}
+              <tr>
+                <td>{m.team1_name} vs {m.team2_name}</td>
+                <td>
+                  {#each getGameScores(m) as g}
+                    <div>
+                      {#if m.games && m.games.length > 0}
+                        <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
+                      {/if}
+                      <span>{g.score}</span>
+                    </div>
+                  {/each}
+                </td>
+                <td>{m.winner_team_name}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+
+    <!-- Playoffs section (by round) -->
+    {#if playoffMatches.length > 0}
+      <div style="margin-bottom: 0.5rem;">
+        {#each Object.keys(playoffsByRound) as round}
+          <div style="margin-bottom: 0.5rem;">
+            <div class="section-title">{round}</div>
+            <table class="table matches-table">
+              <thead>
+                <tr>
+                  <th>Match</th>
+                  <th>Score</th>
+                  <th>Winner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each playoffsByRound[round] as m}
+                  <tr>
+                    <td>{m.team1_name} vs {m.team2_name}</td>
+                    <td>
+                      {#each getGameScores(m) as g}
+                        <div>
+                          {#if m.games && m.games.length > 0}
+                            <span class="muted" style="margin-right: 0.25rem;">{g.label}</span>
+                          {/if}
+                          <span>{g.score}</span>
+                        </div>
+                      {/each}
+                    </td>
+                    <td>{m.winner_team_name}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -101,7 +187,6 @@
     overflow-x: hidden;
   }
 
-  /* let the table take full card width and wrap naturally */
   .matches-table {
     width: 100%;
     border-collapse: collapse;
@@ -109,7 +194,6 @@
 
   .matches-table th,
   .matches-table td {
-    /* allow wrapping, no ellipsis */
     white-space: normal;
   }
 </style>

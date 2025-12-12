@@ -29,12 +29,51 @@
   let standingsContainer;
   let matchesMaxHeight = 0;
 
+  // --- NEW: helper to sync the URL with the selected season ---
+  function syncUrlSeason(id) {
+    if (typeof window === 'undefined') return;
+
+    const url = new URL(window.location.href);
+
+    if (id != null) {
+      url.searchParams.set('season', id);
+    } else {
+      url.searchParams.delete('season');
+    }
+
+    // Use replaceState so we don't add history entries on every change
+    window.history.replaceState({}, '', url);
+  }
+
   onMount(async () => {
     try {
       seasons = await getSeasons();
+
       if (seasons.length > 0) {
-        selectedSeasonId = seasons[0].id;
-        await loadDashboard(selectedSeasonId);
+        let initialId = null;
+
+        // --- NEW: look for ?season=<id> in URL ---
+        if (typeof window !== 'undefined') {
+          const url = new URL(window.location.href);
+          const seasonParam = url.searchParams.get('season');
+
+          if (seasonParam) {
+            const parsed = Number(seasonParam);
+            // Only use it if it matches a real season
+            if (seasons.some((s) => s.id === parsed)) {
+              initialId = parsed;
+            }
+          }
+        }
+
+        // Fallback to first season if URL param is missing/invalid
+        if (initialId === null) {
+          initialId = seasons[0].id;
+        }
+
+        selectedSeasonId = initialId;
+        syncUrlSeason(initialId); // keep URL in sync
+        await loadDashboard(initialId);
       }
     } catch (e) {
       console.error(e);
@@ -65,6 +104,7 @@
   function handleSeasonChange(event) {
     const id = Number(event.target.value);
     selectedSeasonId = id;
+    syncUrlSeason(id);   // NEW: update URL when dropdown changes
     loadDashboard(id);
   }
 
@@ -119,13 +159,11 @@
 
     {#if !loading && dashboard}
       <div class="grid-1" style="margin-bottom: 1rem;">
-        <!-- 👇 pass the badges into the Badges component -->
         <Badges badges={seasonBadges} />
       </div>
     {/if}
 
     <div class="grid-2" style="margin-bottom: 1.5rem;">
-      <!-- 👇 we wrap the standings card so we can measure it -->
       <div bind:this={standingsContainer}>
         <StandingsTable
           teams={dashboard.teams}
@@ -134,7 +172,6 @@
         />
       </div>
 
-      <!-- Regular-season matches: clamp to standings height, scroll excess -->
       <MatchesByWeek
         matches={dashboard.matches}
         matchGames={dashboard.matchGames}

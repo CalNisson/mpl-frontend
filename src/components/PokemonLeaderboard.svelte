@@ -22,52 +22,68 @@
 
   function extractSpeciesName(raw) {
     if (!raw) return null;
-    // In case you ever add extra stuff like "(Calvin)" later
     return raw.split('(')[0].trim();
   }
 
   function toPokeApiSlug(rawName) {
     if (!rawName) return null;
 
+    const raw = rawName
+      .toLowerCase()
+      .replace(/\./g, '')
+      .replace(/['"]/g, '')
+      .trim();
+
+    if (raw.includes('urshifu')) {
+      if (raw.includes('single')) return 'urshifu-single-strike';
+      if (raw.includes('rapid'))  return 'urshifu-rapid-strike';
+
+      return 'urshifu-single-strike';
+    }
+
     let n = extractSpeciesName(rawName)
       .toLowerCase()
       .replace(/\./g, '')
-      .replace(/['"]/g, '');
+      .replace(/['"]/g, '')
+      .trim();
 
-    // Mega forms: "Mega Medicham" -> "medicham-mega"
-    // "Mega Charizard X" -> "charizard-mega-x"
+    if (n.startsWith('minior')) {
+      return 'minior-red-meteor';
+    } else if (n.endsWith('keldeo')) {
+      return 'keldeo-ordinary';
+    } else if (n.startsWith('aegislash')) {
+      return 'aegislash-shield';
+    }
+
     if (n.startsWith('mega ')) {
-      let rest = n.slice(5).trim();
-      if (/( x| y)$/.test(rest)) {
-        const suffix = rest.slice(-1);          // 'x' or 'y'
-        const base = rest.slice(0, -2).trim();  // "charizard"
+      let rest = n.replace('mega ', '').trim();
+
+      if (/ x$| y$/.test(rest)) {
+        const suffix = rest.slice(-1);
+        const base = rest.slice(0, -2).trim();
         return `${base}-mega-${suffix}`;
       }
       return `${rest}-mega`;
     }
 
-    if(n.startsWith('minior')) {
-      return 'minior-red-meteor';
-    }
-
-    // Regional forms: "Alolan Ninetales" -> "ninetales-alola"
-    const formPrefixes = [
-      ['alolan ', '-alola'],
+    const regionalForms = [
+      ['alolan ',  '-alola'],
       ['galarian ', '-galar'],
       ['hisuian ', '-hisui'],
       ['paldean ', '-paldea']
     ];
 
-    for (const [prefix, suffix] of formPrefixes) {
+    for (const [prefix, suffix] of regionalForms) {
       if (n.startsWith(prefix)) {
         const base = n.slice(prefix.length).trim();
         return `${base}${suffix}`;
       }
     }
 
-    // Default: replace spaces with hyphens
     return n.replace(/\s+/g, '-');
   }
+
+
 
   async function preloadSprites(pokemonRows) {
     const names = Array.from(
@@ -97,7 +113,6 @@
           null;
 
         if (url) {
-          // Reassign object so Svelte notices the change
           spriteCache = { ...spriteCache, [name]: url };
         }
       } catch (err) {
