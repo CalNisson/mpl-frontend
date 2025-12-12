@@ -241,7 +241,12 @@
     try {
       const leagueType = tierToLeagueType(tier);
       const raw = await getCoaches(leagueType);
-      coaches = (raw ?? []).map(enrichCoach);
+      const cleaned = (raw ?? []).filter((c) => {
+        const name = (c?.coach_name ?? "").trim().toLowerCase();
+        return name !== "unknown";
+      });
+
+      coaches = cleaned.map(enrichCoach);
     } catch (e) {
       error = e?.message ?? String(e);
     } finally {
