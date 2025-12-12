@@ -12,9 +12,7 @@
   const PAGE_SIZE = 100;
 
   // sorting
-  // null = use the default "career ranking" order:
-  // Titles ↓, MVPs ↓, Finals ↓, Medals ↓, Top8s ↓, Diff ↓, Kills ↓, GP ↑, Name ↑
-  let sortKey = null; // pokemon_name | kills | deaths | differential | games_played | titles | finals | medals | top8s | mvps | null
+  let sortKey = null; // null = default career ranking
   let sortDir = "desc"; // asc | desc
 
   // sprite cache
@@ -46,17 +44,12 @@
       .replace(/['"]/g, "")
       .trim();
 
-    if (n.startsWith("minior")) {
-      return "minior-red-meteor";
-    } else if (n.endsWith("keldeo")) {
-      return "keldeo-ordinary";
-    } else if (n.startsWith("aegislash")) {
-      return "aegislash-shield";
-    }
+    if (n.startsWith("minior")) return "minior-red-meteor";
+    if (n.endsWith("keldeo")) return "keldeo-ordinary";
+    if (n.startsWith("aegislash")) return "aegislash-shield";
 
     if (n.startsWith("mega ")) {
       let rest = n.replace("mega ", "").trim();
-
       if (/ x$| y$/.test(rest)) {
         const suffix = rest.slice(-1);
         const base = rest.slice(0, -2).trim();
@@ -84,11 +77,7 @@
 
   async function preloadSprites(pokemonRows) {
     const names = Array.from(
-      new Set(
-        pokemonRows
-          .map((p) => p.pokemon_name)
-          .filter(Boolean)
-      )
+      new Set(pokemonRows.map((p) => p.pokemon_name).filter(Boolean))
     );
 
     for (const name of names) {
@@ -115,72 +104,115 @@
   }
 
   function setSort(key) {
-    // clicking a header switches into "manual sort" mode
     if (sortKey === key) {
       sortDir = sortDir === "desc" ? "asc" : "desc";
     } else {
       sortKey = key;
-      // default direction: name asc, numbers desc
       sortDir = key === "pokemon_name" ? "asc" : "desc";
     }
     page = 1;
   }
 
+  // ---------- helpers ----------
+  function normName(v) {
+    return (v ?? "").toString().toLowerCase();
+  }
+
+  function getNum(p, key) {
+    // supports snake_case and camelCase (just in case)
+    const direct = p?.[key];
+    if (direct != null) return Number(direct) || 0;
+
+    const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    const alt = p?.[camel];
+    if (alt != null) return Number(alt) || 0;
+
+    return 0;
+  }
+
+  // canonical career ranking (your requested default)
   function defaultCompare(a, b) {
     return (
-      (b.titles ?? 0) - (a.titles ?? 0) ||
-      (b.mvps ?? 0) - (a.mvps ?? 0) ||
-      (b.finals ?? 0) - (a.finals ?? 0) ||
-      (b.medals ?? 0) - (a.medals ?? 0) ||
-      (b.top8s ?? 0) - (a.top8s ?? 0) ||
-      (b.differential ?? 0) - (a.differential ?? 0) ||
-      (b.kills ?? 0) - (a.kills ?? 0) ||
-      (a.games_played ?? 0) - (b.games_played ?? 0) ||
-      (a.pokemon_name ?? "").localeCompare(b.pokemon_name ?? "")
+      getNum(b, "titles") - getNum(a, "titles") ||
+      getNum(b, "mvps") - getNum(a, "mvps") ||
+      getNum(b, "finals") - getNum(a, "finals") ||
+      getNum(b, "medals") - getNum(a, "medals") ||
+      getNum(b, "top8s") - getNum(a, "top8s") ||
+      getNum(b, "differential") - getNum(a, "differential") ||
+      getNum(b, "kills") - getNum(a, "kills") ||
+      getNum(a, "games_played") - getNum(b, "games_played") ||
+      normName(a.pokemon_name).localeCompare(normName(b.pokemon_name))
     );
   }
 
-  function cmp(a, b) {
-    // Default: your requested career ranking order
-    if (!sortKey) return defaultCompare(a, b);
+  $: searchNorm = normName(search.trim());
 
-    const dir = sortDir === "asc" ? 1 : -1;
+  // 1) global rank map (always based on default career ranking)
+  $: rankedAll = [...(rows ?? [])].filter(Boolean).sort(defaultCompare);
 
-    if (sortKey === "pokemon_name") {
-      return (
-        (a.pokemon_name ?? "")
-          .toLowerCase()
-          .localeCompare((b.pokemon_name ?? "").toLowerCase()) * dir
-      );
-    }
+  $: rankById = new Map(
+    rankedAll
+      .filter((p) => p.pokemon_id != null)
+      .map((p, idx) => [p.pokemon_id, idx + 1])
+  );
 
-    const av = Number(a?.[sortKey] ?? 0);
-    const bv = Number(b?.[sortKey] ?? 0);
-
-    if (av !== bv) return (av - bv) * dir;
-
-    // tie-breaks fall back to the career ranking order
-    return defaultCompare(a, b);
-  }
-
-  $: searchNorm = search.trim().toLowerCase();
-
-  $: filtered = [...(rows ?? [])]
-    .filter((r) => r != null)
+  // 2) filter
+  $: filteredOnly = [...(rows ?? [])]
+    .filter(Boolean)
     .filter((r) => {
       if (!searchNorm) return true;
-      return (r.pokemon_name ?? "").toLowerCase().includes(searchNorm);
-    })
-    .sort(cmp);
+      return normName(r.pokemon_name).includes(searchNorm);
+    });
 
-  $: total = filtered.length;
+  // 3) manual sort:
+  // IMPORTANT: sort in a single base direction, then reverse array for asc.
+  // - For numeric columns: base = DESC (largest first)
+  // - For pokemon_name:  base = ASC  (A..Z)
+  function manualBaseCompare(a, b) {
+    // name: base ASC
+    if (sortKey === "pokemon_name") {
+      const nameCmp = normName(a.pokemon_name).localeCompare(normName(b.pokemon_name));
+      if (nameCmp !== 0) return nameCmp;
+      // stable ties: career rank asc, then name
+      const ra = rankById.get(a.pokemon_id) ?? Number.POSITIVE_INFINITY;
+      const rb = rankById.get(b.pokemon_id) ?? Number.POSITIVE_INFINITY;
+      if (ra !== rb) return ra - rb;
+      return normName(a.pokemon_name).localeCompare(normName(b.pokemon_name));
+    }
+
+    // numeric: base DESC
+    const av = getNum(a, sortKey);
+    const bv = getNum(b, sortKey);
+    if (av !== bv) return bv - av;
+
+    // stable ties (DO NOT depend on sortDir)
+    const ra = rankById.get(a.pokemon_id) ?? Number.POSITIVE_INFINITY;
+    const rb = rankById.get(b.pokemon_id) ?? Number.POSITIVE_INFINITY;
+    if (ra !== rb) return ra - rb;
+
+    return normName(a.pokemon_name).localeCompare(normName(b.pokemon_name));
+  }
+
+  // 3) sort (AFTER filter, BEFORE paginate)
+  $: sortedBase = [...filteredOnly].sort(sortKey ? manualBaseCompare : defaultCompare);
+
+  // If user wants ASC:
+  // - for pokemon_name: reverse makes it Z..A
+  // - for numbers: reverse makes it smallest..largest
+  $: sorted =
+    sortKey && sortDir === "asc"
+      ? [...sortedBase].reverse()
+      : sortedBase;
+
+  // 4) paginate AFTER sorting
+  $: total = sorted.length;
   $: totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   $: page = Math.min(Math.max(1, page), totalPages);
 
   $: start = (page - 1) * PAGE_SIZE;
-  $: pageRows = filtered.slice(start, start + PAGE_SIZE);
+  $: pageRows = sorted.slice(start, start + PAGE_SIZE);
 
-  // preload only what's visible (fast)
+  // preload only what's visible
   $: if (pageRows.length) preloadSprites(pageRows);
 
   async function load() {
@@ -203,6 +235,7 @@
       await load();
     } catch (e) {
       error = e?.message ?? String(e);
+    } finally {
       loading = false;
     }
   }
@@ -265,7 +298,11 @@
     <table class="table sticky">
       <thead>
         <tr>
-          <th>#</th>
+          <th class="clickable" on:click={() => { sortKey = null; sortDir = "desc"; page = 1; }}>
+            #
+            {#if !sortKey}<span class="arrow">▼</span>{/if}
+          </th>
+
           <th></th>
 
           <th class="clickable" on:click={() => setSort("pokemon_name")}>
@@ -321,9 +358,10 @@
       </thead>
 
       <tbody>
-        {#each pageRows as p, i}
+        {#each pageRows as p (p.pokemon_id)}
           <tr>
-            <td>{start + i + 1}</td>
+            <td>{p.pokemon_id != null ? (rankById.get(p.pokemon_id) ?? "-") : "-"}</td>
+
             <td class="sprite-cell">
               {#if spriteCache[p.pokemon_name]}
                 <img
