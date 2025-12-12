@@ -26,3 +26,9 @@ export async function getSeasonBadges(seasonId) {
   const res = await fetch(`${API_BASE}/seasons/${seasonId}/badges`);
   return handle(res);
 }
+
+export async function getCoaches(leagueType = "major") {
+  const res = await fetch(`${API_BASE}/coaches?league_type=${encodeURIComponent(leagueType)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return await res.json();
+}
