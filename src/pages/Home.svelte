@@ -29,30 +29,43 @@
   let standingsContainer;
   let matchesMaxHeight = 0;
 
-  // --- NEW: helper to sync the URL with the selected season ---
+  // --- helper to sync the URL with the selected season ---
   function syncUrlSeason(id) {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
+
+    // only persist season param on the Home (seasons) route: "#/" or "#"
+    const hash = window.location.hash || "#/";
+    const onHome = hash === "#/" || hash === "#";
 
     const url = new URL(window.location.href);
 
-    if (id != null) {
-      url.searchParams.set('season', id);
-    } else {
-      url.searchParams.delete('season');
+    if (!onHome) {
+      // if we leave Home, remove it so other tabs don't carry it
+      url.searchParams.delete("season");
+      window.history.replaceState({}, "", url);
+      return;
     }
 
-    // Use replaceState so we don't add history entries on every change
-    window.history.replaceState({}, '', url);
+    if (id != null) url.searchParams.set("season", id);
+    else url.searchParams.delete("season");
+
+    window.history.replaceState({}, "", url);
+  }
+
+  // ✅ NEW: remove ?season=... when navigating away from Home
+  function onHashChange() {
+    syncUrlSeason(selectedSeasonId);
   }
 
   onMount(async () => {
+    // ✅ listen for tab/route changes (hash router)
+    window.addEventListener("hashchange", onHashChange);
+
     try {
       seasons = await getSeasons();
 
       if (seasons.length > 0) {
         let initialId = null;
-
-        // --- NEW: look for ?season=<id> in URL ---
         if (typeof window !== 'undefined') {
           const url = new URL(window.location.href);
           const seasonParam = url.searchParams.get('season');
@@ -79,6 +92,11 @@
       console.error(e);
       error = 'Failed to load seasons: ' + e.message;
     }
+
+    // ✅ cleanup when component unmounts
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+    };
   });
 
   async function loadDashboard(id) {
@@ -104,7 +122,7 @@
   function handleSeasonChange(event) {
     const id = Number(event.target.value);
     selectedSeasonId = id;
-    syncUrlSeason(id);   // NEW: update URL when dropdown changes
+    syncUrlSeason(id);   // update URL when dropdown changes
     loadDashboard(id);
   }
 
@@ -120,6 +138,7 @@
     updateMatchesHeight();
   });
 </script>
+
 
 <div class="app-shell">
   <header class="app-header">
