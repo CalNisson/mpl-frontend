@@ -23,6 +23,7 @@
         <a href="#/crosstable" use:link class:active={path === "/crosstable"}>Crosstable</a>
         <a href="#/mvps" use:link class:active={path === "/mvps"}>MVPs</a>
         <a href="#/medals" use:link class:active={path === "/medals"}>Medals</a>
+        <a href="#/badges" use:link class:active={path === "/badges"}>Badges</a>
       </nav>
     </header>
 

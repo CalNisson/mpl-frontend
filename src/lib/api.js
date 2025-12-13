@@ -61,3 +61,9 @@ export async function getMvps(leagueType) {
   const res = await fetch(`${API_BASE}/mvps${qs}`); // no credentials
   return handle(res);
 }
+
+export async function getBadges(leagueType = "major") {
+  const qs = leagueType ? `?league_type=${encodeURIComponent(leagueType)}` : "";
+  const res = await fetch(`${API_BASE}/badges${qs}`);
+  return handle(res);
+}
