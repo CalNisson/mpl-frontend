@@ -42,3 +42,22 @@ export async function runPokemonStatsRollup() {
   const res = await fetch(`${API_BASE}/pokemon/stats/run`);
   return handle(res);
 }
+
+export async function getCoachCrosstable(namesCsv = "") {
+  const qs = namesCsv?.trim()
+    ? `?names=${encodeURIComponent(namesCsv)}`
+    : "";
+  const res = await fetch(`${API_BASE}/coaches/crosstable${qs}`);
+  return handle(res);
+}
+
+export async function refreshCoachCrosstableCache() {
+  const res = await fetch(`${API_BASE}/coaches/crosstable/refresh`, { method: "POST" });
+  return handle(res);
+}
+
+export async function getMvps(leagueType) {
+  const qs = leagueType ? `?league_type=${encodeURIComponent(leagueType)}` : "";
+  const res = await fetch(`${API_BASE}/mvps${qs}`); // no credentials
+  return handle(res);
+}

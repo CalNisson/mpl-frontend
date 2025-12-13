@@ -164,7 +164,7 @@
   .mvp-sprite {
     width: 96px;                  /* bigger sprite */
     height: 96px;
-    image-rendering: pixelated;
+    image-rendering: default;
     margin: 0.5rem 0 0.5rem;
   }
 

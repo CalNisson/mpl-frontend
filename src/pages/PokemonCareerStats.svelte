@@ -494,7 +494,7 @@
   .pokemon-sprite{
     width: 32px;
     height: 32px;
-    image-rendering: pixelated;
+    image-rendering: default;
     display: inline-block;
   }
 </style>

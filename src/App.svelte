@@ -20,6 +20,8 @@
       <a href="#/" use:link class:active={path === "/"}>Seasons</a>
       <a href="#/coaches" use:link class:active={path === "/coaches"}>Coaches</a>
       <a href="#/pokemon" use:link class:active={path === "/pokemon"}>Pokémon</a>
+      <a href="#/crosstable" use:link class:active={path === "/crosstable"}>Crosstable</a>
+      <a href="#/mvps" use:link class:active={path === "/mvps"}>MVPs</a>
     </nav>
   </header>
 
