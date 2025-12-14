@@ -122,3 +122,17 @@ export async function getBadges(leagueType = "major") {
     return handle(res);
   });
 }
+
+export async function getCoachProfileByName(name) {
+  return cached(`coach-profile:${name.toLowerCase()}`, async () => {
+    const res = await fetch(`${API_BASE}/coaches/by-name/${encodeURIComponent(name)}/profile`);
+    return handle(res);
+  });
+}
+
+export async function getCoachSeasonDetails(coachId, seasonId) {
+  return cached(`coach-season-details:${coachId}:${seasonId}`, async () => {
+    const res = await fetch(`${API_BASE}/coaches/${coachId}/seasons/${seasonId}/details`);
+    return handle(res);
+  });
+}

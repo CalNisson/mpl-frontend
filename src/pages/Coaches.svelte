@@ -382,7 +382,9 @@
           <div class="card coach-card">
             <div class="coach-top">
               <div class="coach-left">
-                <div class="coach-name">{c.coach_name}</div>
+                <a href={`#/coach?name=${encodeURIComponent(c.coach_name)}`} class="coach-link">
+                  {c.coach_name}
+                </a>
 
                 <div class="stat">
                   <div class="label">Joined</div>
@@ -760,5 +762,15 @@
     font-weight:900;
     font-size:.85rem;
     color:rgba(255,255,255,.85);
+  }
+  a:link {
+    color: white;
+    background-color: transparent;
+    text-decoration: underline;
+  }
+  a:visited {
+    color: white;
+    background-color: transparent;
+    text-decoration: underline;
   }
 </style>

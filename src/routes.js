@@ -5,6 +5,7 @@ import CoachCrosstable from "./pages/CoachCrosstable.svelte";
 import MVPs from "./pages/MVPs.svelte";
 import Medals from "./pages/Medals.svelte";
 import BadgesPage from "./pages/BadgesPage.svelte";
+import CoachProfile from "./pages/CoachProfile.svelte";
 
 
 export default {
@@ -14,5 +15,6 @@ export default {
   "/crosstable": CoachCrosstable,
   "/mvps": MVPs,
   "/medals": Medals,
-  "/badges": BadgesPage
+  "/badges": BadgesPage,
+  "/coach": CoachProfile
 };
