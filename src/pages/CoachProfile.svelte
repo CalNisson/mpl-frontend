@@ -81,6 +81,138 @@
     return null;
   };
 
+  // --- Transaction label + icon helpers ---
+  const normalizeTxType = (t) => {
+    const s = (t ?? "").toString().trim().toLowerCase();
+    if (s === "drop") return "Drop";
+    if (s === "pickup" || s === "pick up") return "Pickup";
+    if (s === "trade") return "Trade";
+    return t ?? "";
+  };
+
+  const txKind = (t) => {
+    const s = (t ?? "").toString().trim().toLowerCase();
+    if (s === "drop") return "drop";
+    if (s === "pickup" || s === "pick up") return "pickup";
+    if (s === "trade") return "trade";
+    return "other";
+  };
+
+  const txIcon = (t) => {
+    switch (txKind(t)) {
+      case "drop":
+        return "↓";
+      case "pickup":
+        return "↑";
+      case "trade":
+        return "⇄";
+      default:
+        return "•";
+    }
+  };
+
+  // ----- Sprite helpers (reused pattern from PokemonLeaderboard.svelte) -----
+  let spriteCache = {}; // { [pokemon_name]: url }
+
+  function extractSpeciesName(raw) {
+    if (!raw) return null;
+    return raw.split("(")[0].trim();
+  }
+
+  function toPokeApiSlug(rawName) {
+    if (!rawName) return null;
+
+    const raw = rawName
+      .toLowerCase()
+      .replace(/\./g, "")
+      .replace(/['"]/g, "")
+      .trim();
+
+    if (raw.includes("urshifu")) {
+      if (raw.includes("single")) return "urshifu-single-strike";
+      if (raw.includes("rapid")) return "urshifu-rapid-strike";
+      return "urshifu-single-strike";
+    }
+
+    let n = extractSpeciesName(rawName)
+      .toLowerCase()
+      .replace(/\./g, "")
+      .replace(/['"]/g, "")
+      .trim();
+
+    if (n.startsWith("minior")) {
+      return "minior-red-meteor";
+    } else if (n.endsWith("keldeo")) {
+      return "keldeo-ordinary";
+    } else if (n.startsWith("aegislash")) {
+      return "aegislash-shield";
+    }
+
+    if (n.startsWith("mega ")) {
+      let rest = n.replace("mega ", "").trim();
+
+      if (/ x$| y$/.test(rest)) {
+        const suffix = rest.slice(-1);
+        const base = rest.slice(0, -2).trim();
+        return `${base}-mega-${suffix}`;
+      }
+      return `${rest}-mega`;
+    }
+
+    const regionalForms = [
+      ["alolan ", "-alola"],
+      ["galarian ", "-galar"],
+      ["hisuian ", "-hisui"],
+      ["paldean ", "-paldea"]
+    ];
+
+    for (const [prefix, suffix] of regionalForms) {
+      if (n.startsWith(prefix)) {
+        const base = n.slice(prefix.length).trim();
+        return `${base}${suffix}`;
+      }
+    }
+
+    return n.replace(/\s+/g, "-");
+  }
+
+  async function preloadSprites(names) {
+    const unique = Array.from(new Set((names ?? []).filter(Boolean)));
+
+    for (const name of unique) {
+      if (spriteCache[name]) continue;
+
+      const slug = toPokeApiSlug(name);
+      if (!slug) continue;
+
+      try {
+        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+        if (!res.ok) {
+          console.error("Sprite fetch failed for", slug, res.status);
+          continue;
+        }
+        const data = await res.json();
+        const url =
+          data.sprites?.other?.["official-artwork"]?.front_default ||
+          data.sprites?.front_default ||
+          null;
+
+        if (url) {
+          spriteCache = { ...spriteCache, [name]: url };
+        }
+      } catch (err) {
+        console.error("Error fetching sprite for", slug, err);
+      }
+    }
+  }
+
+  // Whenever open season changes / details load, preload sprites for roster + transactions
+  $: if (openSeasonId && seasonDetails?.[openSeasonId] && !seasonDetails[openSeasonId].loading) {
+    const rosterNames = (seasonDetails[openSeasonId].roster ?? []).map((r) => r.pokemon_name);
+    const txNames = (seasonDetails[openSeasonId].transactions ?? []).map((tr) => tr.pokemon_name);
+    preloadSprites([...rosterNames, ...txNames]);
+  }
+
   onMount(loadProfile);
 </script>
 
@@ -109,14 +241,13 @@
         <div class="chip-v">{seasons.length}</div>
       </div>
 
-      <!-- These are just derived from seasons list -->
       <div class="chip">
         <div class="chip-k">Best Placement</div>
         <div class="chip-v">
           {#if seasons.length === 0}
             —
           {:else}
-            {placementLabel(Math.min(...seasons.map(s => s.final_placement ?? 9999)))}
+            {placementLabel(Math.min(...seasons.map((s) => s.final_placement ?? 9999)))}
           {/if}
         </div>
       </div>
@@ -210,6 +341,7 @@
                   <table class="pretty-table">
                     <thead>
                       <tr>
+                        <th></th>
                         <th>Pokémon</th>
                         <th class="num">K</th>
                         <th class="num">D</th>
@@ -220,6 +352,15 @@
                     <tbody>
                       {#each (seasonDetails[s.season_id].roster ?? []) as r}
                         <tr>
+                          <td class="sprite-cell">
+                            {#if spriteCache[r.pokemon_name]}
+                              <img
+                                class="pokemon-sprite"
+                                src={spriteCache[r.pokemon_name]}
+                                alt={`Sprite of ${r.pokemon_name}`}
+                              />
+                            {/if}
+                          </td>
                           <td class="name">{r.pokemon_name}</td>
                           <td class="num">{r.kills}</td>
                           <td class="num">{r.deaths}</td>
@@ -255,7 +396,15 @@
 
                         <div class="righty">
                           <div class="score">{m.my_score}-{m.opp_score}</div>
-                          <div class="result {m.result === 'W' ? 'win' : m.result === 'L' ? 'loss' : m.result === 'T' ? 'tie' : 'none'}">
+                          <div
+                            class="result {m.result === 'W'
+                              ? 'win'
+                              : m.result === 'L'
+                                ? 'loss'
+                                : m.result === 'T'
+                                  ? 'tie'
+                                  : 'none'}"
+                          >
                             {m.result}
                           </div>
                         </div>
@@ -276,16 +425,34 @@
                       {#each (seasonDetails[s.season_id].transactions ?? []) as tr (tr.id)}
                         <div class="tx">
                           <div class="tx-left">
-                            <div class="tx-week">W{tr.week ?? "—"}</div>
-                            <div class="tx-type">{tr.transaction_type}</div>
+                            <!-- Week is now OUTSIDE / neutral -->
+                            <div class="tx-week-out">W{tr.week ?? "—"}</div>
+
+                            <!-- Box is only icon + type -->
+                            <div class="tx-badge {txKind(tr.transaction_type)}">
+                              <div class="tx-icon" aria-hidden="true">{txIcon(tr.transaction_type)}</div>
+                              <div class="tx-type">{normalizeTxType(tr.transaction_type)}</div>
+                            </div>
                           </div>
 
                           <div class="tx-mid">
-                            <div class="tx-poke">{tr.pokemon_name}</div>
+                            <div class="tx-poke">
+                              <span class="poke-sprite">
+                                {#if spriteCache[tr.pokemon_name]}
+                                  <img
+                                    class="pokemon-sprite"
+                                    src={spriteCache[tr.pokemon_name]}
+                                    alt={`Sprite of ${tr.pokemon_name}`}
+                                  />
+                                {/if}
+                              </span>
+                              <span>{tr.pokemon_name}</span>
+                            </div>
+
                             <div class="tx-flow muted">
                               <span class="from">{tr.team_from_name ?? "Free Agency"}</span>
                               <span class="arrow">→</span>
-                              <span class="to">{tr.team_to_name}</span>
+                              <span class="to">{tr.team_to_name ?? "Free Agency"}</span>
                             </div>
                           </div>
                         </div>
@@ -304,306 +471,442 @@
 
 <style>
   /* ---- layout ---- */
-  .hero{
-    border: 1px solid rgba(255,255,255,.08);
-    background: rgba(255,255,255,.05);
+  .hero {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.05);
     border-radius: 18px;
     padding: 16px;
     margin-bottom: 14px;
   }
-  .hero-top{
-    display:flex;
+  .hero-top {
+    display: flex;
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
   }
-  .hero-title{
+  .hero-title {
     font-size: 1.4rem;
     font-weight: 800;
-    letter-spacing: .2px;
+    letter-spacing: 0.2px;
   }
-  .hero-sub{ margin-top: 2px; }
+  .hero-sub {
+    margin-top: 2px;
+  }
 
-  .back{
-    text-decoration:none;
-    padding: .4rem .65rem;
+  .back {
+    text-decoration: none;
+    padding: 0.4rem 0.65rem;
     border-radius: 12px;
-    border: 1px solid rgba(255,255,255,.10);
-    background: rgba(255,255,255,.06);
-    color: rgba(255,255,255,.85);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.85);
     font-weight: 700;
   }
 
-  .hero-chips{
+  .hero-chips {
     margin-top: 12px;
-    display:grid;
+    display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 10px;
   }
-  .chip{
-    border: 1px solid rgba(255,255,255,.08);
-    background: rgba(0,0,0,.18);
+  .chip {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.18);
     border-radius: 14px;
     padding: 10px 12px;
   }
-  .chip-k{ font-size:.75rem; opacity:.75; }
-  .chip-v{ font-size: 1.05rem; font-weight: 800; margin-top: 2px; }
+  .chip-k {
+    font-size: 0.75rem;
+    opacity: 0.75;
+  }
+  .chip-v {
+    font-size: 1.05rem;
+    font-weight: 800;
+    margin-top: 2px;
+  }
 
-  .season-list{ display:flex; flex-direction: column; gap: 10px; }
+  .season-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
 
-  .season-card{
+  .season-card {
     border-radius: 18px;
-    border: 1px solid rgba(255,255,255,.08);
-    overflow:hidden;
-    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
   }
-  .season-card.open{
-    border-color: rgba(255,107,107,.35);
-    box-shadow: 0 0 0 1px rgba(255,107,107,.10) inset;
+  .season-card.open {
+    border-color: rgba(255, 107, 107, 0.35);
+    box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.1) inset;
   }
 
-  .season-head{
-    width:100%;
-    display:flex;
+  .season-head {
+    width: 100%;
+    display: flex;
     justify-content: space-between;
-    align-items:center;
+    align-items: center;
     gap: 10px;
     padding: 14px 14px;
     background: transparent;
     border: none;
     cursor: pointer;
-    text-align:left;
+    text-align: left;
+    color: rgba(255, 255, 255, 0.92);
   }
 
-  .season-name{ font-weight: 800; font-size: 1.05rem; }
-  .season-meta{ margin-top: 2px; display:flex; align-items:center; gap: 8px; }
-  .dot{ opacity: .5; }
-  .team{ font-weight: 700; opacity: .9; }
+  .season-name {
+    font-weight: 800;
+    font-size: 1.05rem;
+    color: #ffffff;
+  }
+  .season-meta {
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(255, 255, 255, 0.8);
+  }
+  .dot {
+    opacity: 0.5;
+  }
+  .team {
+    font-weight: 700;
+    opacity: 0.9;
+  }
 
-  .right{
-    display:flex;
-    align-items:center;
+  .right {
+    display: flex;
+    align-items: center;
     gap: 8px;
   }
-  .pill{
-    display:flex;
+  .pill {
+    display: flex;
     gap: 8px;
-    align-items:center;
-    border: 1px solid rgba(255,255,255,.08);
-    background: rgba(0,0,0,.20);
+    align-items: center;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.2);
     border-radius: 999px;
     padding: 6px 10px;
-    font-size: .85rem;
+    font-size: 0.85rem;
     white-space: nowrap;
   }
-  .pill-k{ opacity:.7; font-weight: 700; }
-  .pill-v{ font-weight: 900; }
-  .chev{ opacity:.8; font-weight: 900; padding-left: 4px; }
+  .pill-k {
+    color: rgba(255, 255, 255, 0.7);
+    font-weight: 700;
+  }
+  .pill-v {
+    color: #ffffff;
+    font-weight: 900;
+  }
+  .chev {
+    opacity: 0.8;
+    font-weight: 900;
+    padding-left: 4px;
+  }
 
-  .season-body{
+  .season-body {
     padding: 0 14px 14px 14px;
   }
 
-  .summary-strip{
+  .summary-strip {
     margin-top: 10px;
-    display:grid;
+    display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 10px;
     padding: 12px;
     border-radius: 16px;
-    border: 1px solid rgba(255,255,255,.08);
-    background: rgba(0,0,0,.18);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.18);
   }
-  .stat .k{ font-size:.75rem; opacity:.75; }
-  .stat .v{ font-size: 1.05rem; font-weight: 900; margin-top: 2px; }
+  .stat .k {
+    font-size: 0.75rem;
+    opacity: 0.75;
+  }
+  .stat .v {
+    font-size: 1.05rem;
+    font-weight: 900;
+    margin-top: 2px;
+  }
 
-  .panels{
+  .panels {
     margin-top: 12px;
-    display:grid;
+    display: grid;
     grid-template-columns: 1fr;
     gap: 12px;
   }
 
-  @media (min-width: 980px){
-    .panels{ grid-template-columns: 1.05fr .95fr; }
-    .panels > :nth-child(3){ grid-column: 1 / -1; }
+  @media (min-width: 980px) {
+    .panels {
+      grid-template-columns: 1.05fr 0.95fr;
+    }
+    .panels > :nth-child(3) {
+      grid-column: 1 / -1;
+    }
   }
 
-  .panel{
+  .panel {
     border-radius: 18px;
-    border: 1px solid rgba(255,255,255,.08);
-    background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
     padding: 12px;
   }
-  .panel-title{
+  .panel-title {
     font-weight: 900;
     font-size: 1rem;
   }
-  .panel-sub{ margin-top: 2px; margin-bottom: 10px; }
+  .panel-sub {
+    margin-top: 2px;
+    margin-bottom: 10px;
+  }
 
   /* ---- tables ---- */
-  .pretty-table{
+  .pretty-table {
     width: 100%;
     border-collapse: collapse;
-    overflow:hidden;
+    overflow: hidden;
     border-radius: 14px;
   }
-  .pretty-table thead th{
-    font-size: .8rem;
+  .pretty-table thead th {
+    font-size: 0.8rem;
     text-transform: uppercase;
-    letter-spacing: .06em;
-    opacity: .75;
+    letter-spacing: 0.06em;
+    opacity: 0.75;
     padding: 10px 10px;
-    border-bottom: 1px solid rgba(255,255,255,.10);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   }
-  .pretty-table tbody td{
+  .pretty-table tbody td {
     padding: 10px 10px;
-    border-bottom: 1px solid rgba(255,255,255,.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
-  .pretty-table tbody tr:nth-child(2n){
-    background: rgba(255,255,255,.03);
+  .pretty-table tbody tr:nth-child(2n) {
+    background: rgba(255, 255, 255, 0.03);
   }
-  .pretty-table .name{ font-weight: 750; }
-  .num{ text-align:right; }
+  .pretty-table .name {
+    font-weight: 750;
+  }
+  .num {
+    text-align: right;
+  }
+
+  .sprite-cell {
+    width: 42px;
+    text-align: center;
+  }
+  .pokemon-sprite {
+    width: 28px;
+    height: 28px;
+    display: inline-block;
+  }
 
   /* ---- schedule ---- */
-  .schedule{ display:flex; flex-direction: column; gap: 8px; }
-  .match-row{
-    display:grid;
+  .schedule {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .match-row {
+    display: grid;
     grid-template-columns: 80px 1fr 110px;
     gap: 10px;
-    align-items:center;
+    align-items: center;
     border-radius: 14px;
-    border: 1px solid rgba(255,255,255,.07);
-    background: rgba(0,0,0,.14);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(0, 0, 0, 0.14);
     padding: 10px;
   }
-  .wk-top{ font-size:.75rem; opacity:.7; }
-  .wk-val{ font-weight: 900; font-size: 1rem; }
-  .opp-name{ font-weight: 800; }
-  .tag{
-    display:inline-block;
+  .wk-top {
+    font-size: 0.75rem;
+    opacity: 0.7;
+  }
+  .wk-val {
+    font-weight: 900;
+    font-size: 1rem;
+  }
+  .opp-name {
+    font-weight: 800;
+  }
+  .tag {
+    display: inline-block;
     margin-top: 6px;
-    font-size: .78rem;
+    font-size: 0.78rem;
     padding: 4px 8px;
     border-radius: 999px;
-    border: 1px solid rgba(255,107,107,.25);
-    background: rgba(255,107,107,.14);
+    border: 1px solid rgba(255, 107, 107, 0.25);
+    background: rgba(255, 107, 107, 0.14);
   }
-  .righty{ display:flex; flex-direction: column; align-items:flex-end; gap: 6px; }
-  .score{ font-weight: 900; }
-  .result{
+  .righty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .score {
+    font-weight: 900;
+  }
+  .result {
     width: 34px;
     height: 26px;
     border-radius: 10px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-weight: 900;
-    border: 1px solid rgba(255,255,255,.10);
-    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
   }
-  .result.win{
-    border-color: rgba(46, 204, 113, .35);
-    background: rgba(46, 204, 113, .12);
+  .result.win {
+    border-color: rgba(46, 204, 113, 0.35);
+    background: rgba(46, 204, 113, 0.12);
   }
-  .result.loss{
-    border-color: rgba(231, 76, 60, .35);
-    background: rgba(231, 76, 60, .12);
+  .result.loss {
+    border-color: rgba(231, 76, 60, 0.35);
+    background: rgba(231, 76, 60, 0.12);
   }
-  .result.tie{
-    border-color: rgba(241, 196, 15, .35);
-    background: rgba(241, 196, 15, .12);
+  .result.tie {
+    border-color: rgba(241, 196, 15, 0.35);
+    background: rgba(241, 196, 15, 0.12);
   }
 
   /* ---- transactions ---- */
-  .tx-list{ display:flex; flex-direction: column; gap: 8px; }
-  .tx{
-    display:grid;
-    grid-template-columns: 110px 1fr;
+  .tx-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .tx {
+    display: grid;
+    grid-template-columns: 150px 1fr; /* a bit wider since week is outside now */
     gap: 10px;
-    align-items:center;
+    align-items: center;
     border-radius: 14px;
-    border: 1px solid rgba(255,255,255,.07);
-    background: rgba(0,0,0,.14);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(0, 0, 0, 0.14);
     padding: 10px;
   }
-  .tx-week{
+
+  .tx-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .tx-week-out {
     font-weight: 900;
-    font-size: 1rem;
+    font-size: 0.95rem;
+    color: rgba(255, 255, 255, 0.85);
+    min-width: 44px; /* keeps alignment nice */
   }
-  .tx-type{
+
+  .tx-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+
+    padding: 6px 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.05);
+    min-width: 64px;
+  }
+
+  .tx-icon {
+    font-size: 0.95rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .tx-type {
+    font-weight: 800;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    opacity: 0.9;
+  }
+
+  .tx-badge.drop {
+    border-color: rgba(231, 76, 60, 0.35);
+    background: rgba(231, 76, 60, 0.1);
+  }
+  .tx-badge.drop .tx-icon {
+    color: rgba(231, 76, 60, 0.95);
+  }
+
+  .tx-badge.pickup {
+    border-color: rgba(46, 204, 113, 0.35);
+    background: rgba(46, 204, 113, 0.1);
+  }
+  .tx-badge.pickup .tx-icon {
+    color: rgba(46, 204, 113, 0.95);
+  }
+
+  .tx-badge.trade {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .tx-badge.trade .tx-icon {
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .tx-poke {
+    font-weight: 900;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .poke-sprite {
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .tx-flow {
     margin-top: 2px;
-    font-size: .8rem;
-    opacity: .75;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
   }
-  .tx-poke{ font-weight: 900; }
-  .tx-flow{ margin-top: 2px; display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
-  .arrow{ opacity: .65; }
+  .arrow {
+    opacity: 0.65;
+  }
 
   /* diff coloring */
-  .pos{ color: rgba(46, 204, 113, .95); }
-  .neg{ color: rgba(231, 76, 60, .95); }
-  .neu{ color: rgba(255,255,255,.85); }
-
-  .error{
-    color: #ffb3b3;
-    border-color: rgba(231, 76, 60, .35);
-    background: rgba(231, 76, 60, .10);
+  .pos {
+    color: rgba(46, 204, 113, 0.95);
+  }
+  .neg {
+    color: rgba(231, 76, 60, 0.95);
+  }
+  .neu {
+    color: rgba(255, 255, 255, 0.85);
   }
 
-  .accordion {
-  color: rgba(255, 255, 255, 0.9);
-}
+  .error {
+    color: #ffb3b3;
+    border-color: rgba(231, 76, 60, 0.35);
+    background: rgba(231, 76, 60, 0.1);
+  }
 
-.accordion .title {
-  font-weight: 700;
-  font-size: 1.05rem;
-  color: #ffffff;
-}
-
-.accordion .muted {
-  font-size: 0.9rem;
-  color: rgba(255, 255, 255, 0.7);
-}
-
+  .muted {
+    color: rgba(255, 255, 255, 0.7);
+  }
 
   /* tiny skeleton */
-  .skeleton .line{
+  .skeleton .line {
     height: 12px;
     border-radius: 999px;
-    background: rgba(255,255,255,.08);
+    background: rgba(255, 255, 255, 0.08);
     margin: 8px 0;
   }
-  .w40{ width: 40%; }
-  .w60{ width: 60%; }
-
-  /* Ensure header text is light (season name / meta / pills) */
-.season-head {
-  color: rgba(255, 255, 255, 0.92);
-}
-
-.season-name {
-  color: #ffffff;
-}
-
-/* The line that currently appears black for you */
-.season-meta {
-  color: rgba(255, 255, 255, 0.80);
-}
-
-/* Make Rank / Place label + value readable */
-.pill-k {
-  color: rgba(255, 255, 255, 0.70);
-}
-
-.pill-v {
-  color: #ffffff;
-}
-
-/* If your global .muted is dark, override it locally on this page */
-.muted {
-  color: rgba(255, 255, 255, 0.70);
-}
-
+  .w40 {
+    width: 40%;
+  }
+  .w60 {
+    width: 60%;
+  }
 </style>

@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { getCoaches } from "../lib/api.js";
+  import { getCoaches } from "../../lib/api.js";
+  import { leagueContext } from "../../lib/leagueStore.js";
 
   const BASE = import.meta.env.BASE_URL;
 
@@ -43,7 +44,7 @@
     "Triple Crown": "/images/Triple_Crown.png"
   };
 
-  // Medal images (in /public/images)
+  // Medal images (in /public/images) — static now (no league_type concept)
   const medalImg = {
     gold: "/images/major_gold.png",
     silver: "/images/major_silver.png",
@@ -54,8 +55,7 @@
   let loading = false;
   let error = "";
 
-  // Tier tabs
-  let tier = "Major"; // "Major" | "Intermediate" | "Minor"
+  $: leagueId = $leagueContext?.league?.id ?? null;
 
   // Sorting (Alphabetical default)
   let sortKey = "alpha"; // alpha | medals | badges | elo | peak_elo | win_rate | joined
@@ -63,11 +63,14 @@
 
   // Badge filtering (display names, e.g. "Legend")
   let selectedBadges = [];
-  let showFilters = false; // pop-out toggle
+  let showFilters = false;
 
   // click-outside refs
   let filterButtonEl;
   let filterPopoverEl;
+
+  // prevent refetch loops
+  let loadedForLeagueId = null;
 
   const pct = (x) => `${Math.round((x ?? 0) * 1000) / 10}%`;
 
@@ -80,13 +83,6 @@
     const n = Math.max(0, Math.min(50, Number(count) || 0));
     const width = n > 0 ? size + (n - 1) * overlap : size;
     return { n, size, overlap, width };
-  }
-
-  // backend league_type enum values
-  function tierToLeagueType(t) {
-    if (t === "Major") return "major";
-    if (t === "Intermediate") return "intermediate";
-    return "minor";
   }
 
   function toggleBadgeFilter(b) {
@@ -168,7 +164,7 @@
   }
 
   function sortCoaches(list, key, dirStr) {
-    const arr = list.slice(); // never mutate original
+    const arr = list.slice();
     const dir = dirStr === "asc" ? 1 : -1;
 
     arr.sort((a, b) => {
@@ -189,7 +185,6 @@
         if (cmp !== 0) return cmp * dir;
       }
 
-      // tie-breaker: alphabetical ascending
       const an = nameKey(a);
       const bn = nameKey(b);
       if (an < bn) return -1;
@@ -198,6 +193,21 @@
     });
 
     return arr;
+  }
+
+  // Coach has ever had a team in this league (best-effort using common fields)
+  function hasEverHadTeam(c) {
+    // Most common signal in league apps: "joined_season" exists only if they participated (had a team)
+    if (c?.joined_season != null) return true;
+
+    // Other common shapes
+    if (Number(c?.team_count ?? 0) > 0) return true;
+    if (Array.isArray(c?.teams) && c.teams.length > 0) return true;
+    if (Array.isArray(c?.team_ids) && c.team_ids.length > 0) return true;
+    if (Array.isArray(c?.team_names) && c.team_names.length > 0) return true;
+    if (c?.team_id != null) return true;
+
+    return false;
   }
 
   // Badge filter (AND across all selected badges)
@@ -236,28 +246,42 @@
   // ---------------------------------------------
 
   async function loadCoaches() {
+    if (!leagueId) {
+      loading = false;
+      error = "";
+      coaches = [];
+      return;
+    }
+
     loading = true;
     error = "";
     try {
-      const leagueType = tierToLeagueType(tier);
-      const raw = await getCoaches(leagueType);
-      const cleaned = (raw ?? []).filter((c) => {
-        const name = (c?.coach_name ?? "").trim().toLowerCase();
-        return name !== "unknown";
-      });
+      const raw = await getCoaches();
+
+      const cleaned = (raw ?? [])
+        .filter((c) => (c?.coach_name ?? "").trim().toLowerCase() !== "unknown")
+        .filter(hasEverHadTeam);
 
       coaches = cleaned.map(enrichCoach);
     } catch (e) {
       error = e?.message ?? String(e);
+      coaches = [];
     } finally {
       loading = false;
     }
   }
 
-  onMount(loadCoaches);
+  onMount(() => {
+    if (leagueId) {
+      loadedForLeagueId = leagueId;
+      loadCoaches();
+    }
+  });
 
-  // refetch whenever tier changes
-  $: tier, loadCoaches();
+  $: if (leagueId && leagueId !== loadedForLeagueId) {
+    loadedForLeagueId = leagueId;
+    loadCoaches();
+  }
 </script>
 
 <div class="app-shell">
@@ -265,19 +289,6 @@
     <div>
       <div class="app-title">Coaches</div>
       <div class="muted">Profiles, badges, medal counts, MVPs, and ELO.</div>
-
-      <!-- Tier tabs -->
-      <div class="tier-tabs" role="tablist" aria-label="Coach tiers">
-        <button type="button" class="tier-tab" class:is-active={tier === "Major"} on:click={() => (tier = "Major")}>
-          Major
-        </button>
-        <button type="button" class="tier-tab" class:is-active={tier === "Intermediate"} on:click={() => (tier = "Intermediate")}>
-          Intermediate
-        </button>
-        <button type="button" class="tier-tab" class:is-active={tier === "Minor"} on:click={() => (tier = "Minor")}>
-          Minor
-        </button>
-      </div>
 
       <!-- Controls row: Sort (left) + Filter (right) -->
       <div class="controls-row">
@@ -308,8 +319,7 @@
         <div class="control summary">
           <div class="control-label">Showing</div>
           <div class="muted">
-            <strong>{tier}</strong>
-            · Coaches: <strong>{displayedCoaches.length}</strong>
+            Coaches: <strong>{displayedCoaches.length}</strong>
             {#if selectedBadges.length > 0}
               · Badge filter: <strong>{selectedBadges.length}</strong>
             {/if}
@@ -365,13 +375,13 @@
     </div>
   </header>
 
-  {#if error}
+  {#if !leagueId}
+    <div class="card muted">Select a league to view coaches.</div>
+  {:else if error}
     <div class="card" style="border-color:#f97373;color:#fecaca;">
       {error}
     </div>
-  {/if}
-
-  {#if loading}
+  {:else if loading}
     <div class="card">Loading coaches…</div>
   {:else}
     {#if displayedCoaches.length === 0}
@@ -643,35 +653,6 @@
     font-size:.85rem;
   }
 
-  .tier-tabs{
-    display:inline-flex;
-    gap:.5rem;
-    margin-top:.75rem;
-    padding:.25rem;
-    border-radius:999px;
-    background:rgba(255,255,255,.06);
-    border:1px solid rgba(255,255,255,.08);
-  }
-  .tier-tab{
-    appearance:none;
-    border:0;
-    background:transparent;
-    color:rgba(255,255,255,.78);
-    padding:.4rem .85rem;
-    border-radius:999px;
-    font-weight:800;
-    cursor:pointer;
-  }
-  .tier-tab:hover{
-    background:rgba(255,255,255,.08);
-    color:rgba(255,255,255,.92);
-  }
-  .tier-tab.is-active{
-    background:rgba(255,107,107,.22);
-    outline:1px solid rgba(255,107,107,.35);
-    color:rgba(255,255,255,.95);
-  }
-
   .coach-grid{
     display:grid;
     grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
@@ -685,11 +666,7 @@
     gap:1rem;
     align-items:start;
   }
-  .coach-name{
-    font-size:1.1rem;
-    font-weight:900;
-    margin-bottom:.5rem;
-  }
+
   .stat{
     display:flex;
     justify-content:space-between;
@@ -763,12 +740,8 @@
     font-size:.85rem;
     color:rgba(255,255,255,.85);
   }
-  a:link {
-    color: white;
-    background-color: transparent;
-    text-decoration: underline;
-  }
-  a:visited {
+
+  a:link, a:visited {
     color: white;
     background-color: transparent;
     text-decoration: underline;

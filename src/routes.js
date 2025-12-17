@@ -1,20 +1,25 @@
 import Home from "./pages/Home.svelte";
-import Coaches from "./pages/Coaches.svelte";
 import PokemonCareerStats from "./pages/PokemonCareerStats.svelte";
 import CoachCrosstable from "./pages/CoachCrosstable.svelte";
-import MVPs from "./pages/MVPs.svelte";
-import Medals from "./pages/Medals.svelte";
-import BadgesPage from "./pages/BadgesPage.svelte";
 import CoachProfile from "./pages/CoachProfile.svelte";
-
+import LeagueSelect from "./pages/LeagueSelect.svelte";
+import CreateOrg from "./pages/CreateOrg.svelte";
+import CreateLeague from "./pages/CreateLeague.svelte";
+import Login from "./routes/Login.svelte";
+import Register from "./routes/Register.svelte";
+import Leagues from "./routes/Leagues.svelte";
+import HallOfFame from "./routes/HallOfFame.svelte";
 
 export default {
   "/": Home,
-  "/coaches": Coaches,
   "/pokemon": PokemonCareerStats,
   "/crosstable": CoachCrosstable,
-  "/mvps": MVPs,
-  "/medals": Medals,
-  "/badges": BadgesPage,
-  "/coach": CoachProfile
+  "/coach": CoachProfile,
+  "/league": LeagueSelect,
+  "/orgs/new": CreateOrg,
+  "/leagues/new": CreateLeague,
+  "/login": Login,
+  "/register": Register,
+  "/leagues": Leagues,
+  "/hall-of-fame": HallOfFame,
 };

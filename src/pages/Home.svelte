@@ -7,6 +7,9 @@
   import PokemonLeaderboard from '../components/PokemonLeaderboard.svelte';
   import PlayoffsBracket from '../components/PlayoffsBracket.svelte';
   import Badges from '../components/Badges.svelte';
+  import { leagueContext } from "../lib/leagueStore";
+  import { push } from "svelte-spa-router";
+  import { get } from "svelte/store";
 
   let seasons = [];
   let selectedSeasonId = null;
@@ -138,6 +141,7 @@
     updateMatchesHeight();
   });
 </script>
+
 
 
 <div class="app-shell">

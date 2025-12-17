@@ -1,6 +1,9 @@
 <script>
   import { onMount } from "svelte";
   import { getPokemonCareerStats, runPokemonStatsRollup } from "../lib/api.js";
+  import { leagueContext } from "../lib/leagueStore";
+  import { push } from "svelte-spa-router";
+  import { get } from "svelte/store";
 
   let rows = [];
   let loading = true;
@@ -47,6 +50,9 @@
     if (n.startsWith("minior")) return "minior-red-meteor";
     if (n.endsWith("keldeo")) return "keldeo-ordinary";
     if (n.startsWith("aegislash")) return "aegislash-shield";
+    if (n.startsWith("silvally")) return "silvally";
+    if (n.endsWith("indeedee")) return "indeedee-male";
+    if (n.endsWith("thundurus") || n.endsWith("landorus") || n.endsWith("tornadus") || n.endsWith("enamorus")) n += '-incarnate';
 
     if (n.startsWith("mega ")) {
       let rest = n.replace("mega ", "").trim();

@@ -95,6 +95,10 @@
           <span class="muted">Champion:</span>
           <span>{season.champion}</span>
         </div>
+        <div class="season-row">
+          <span class="muted">Format:</span>
+          <span>{season.format}</span>
+        </div>
       </div>
 
       <!-- RIGHT SIDE: MVP BOX -->

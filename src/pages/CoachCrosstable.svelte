@@ -1,6 +1,9 @@
 <script>
   import { onMount } from "svelte";
   import { getCoachCrosstable } from "../lib/api.js";
+  import { leagueContext } from "../lib/leagueStore";
+  import { push } from "svelte-spa-router";
+  import { get } from "svelte/store";
 
   // Cache settings (default/full table only)
   const CACHE_KEY = "coach_crosstable_v1";

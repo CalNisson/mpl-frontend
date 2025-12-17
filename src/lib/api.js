@@ -1,4 +1,6 @@
 // src/lib/api.js
+import { auth } from "./authStore";
+import { getLeagueId, getLeagueSlug } from "./leagueStore";
 
 // You can override this with VITE_API_BASE_URL in a .env file if you want.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -6,9 +8,34 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 async function handle(res) {
   if (!res.ok) {
     const text = await res.text();
+
+    // Auto-clear token on unauthorized
+    if (res.status === 401) {
+      auth.clear();
+      // Optional: if you want to kick them to login immediately
+      // window.location.hash = "#/login";
+    }
+
     throw new Error(`HTTP ${res.status}: ${text}`);
   }
+
+  // Some endpoints might return no content (204)
+  if (res.status === 204) return null;
+
   return res.json();
+}
+
+async function apiFetch(path, options = {}) {
+  const token = auth.getToken();
+
+  const headers = new Headers(options.headers || {});
+  // Only set JSON content-type when we actually send a body and caller didn't specify.
+  if (options.body != null && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  return fetch(`${API_BASE}${path}`, { ...options, headers });
 }
 
 // ----------------------------
@@ -20,7 +47,6 @@ const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 async function cached(key, fetcher, ttlMs = DEFAULT_TTL_MS) {
   const hit = cache.get(key);
   const now = Date.now();
-
   if (hit && now - hit.t < ttlMs) return hit.v;
 
   const v = await fetcher();
@@ -36,103 +62,253 @@ export function clearApiCache(prefix = "") {
 }
 
 // ----------------------------
+// Auth endpoints
+// ----------------------------
+
+export async function register({ email, username, password }) {
+  const res = await apiFetch(`/auth/register`, {
+    method: "POST",
+    body: JSON.stringify({ email, username, password }),
+  });
+  return handle(res);
+}
+
+export async function login({ emailOrUsername, password }) {
+  const res = await apiFetch(`/auth/login`, {
+    method: "POST",
+    body: JSON.stringify({ email_or_username: emailOrUsername, password }),
+  });
+
+  const out = await handle(res); // expect { token: "...", user?: {...} }
+  if (out?.token) auth.setToken(out.token);
+  if (out?.user) auth.me.set(out.user);
+  return out;
+}
+
+export async function getMe() {
+  const res = await apiFetch(`/auth/me`, { method: "GET" });
+  const out = await handle(res);
+  auth.me.set(out);
+  return out;
+}
+
+export function logout() {
+  auth.clear();
+  // optional: window.location.hash = "#/login";
+}
+
+// ----------------------------
+// League query helpers
+// ----------------------------
+
+// Acceptable "league input" forms:
+// - undefined/null => use current league context (getLeagueId/getLeagueSlug)
+// - number/string => treated as league_id
+// - { league_id, league_slug } => explicit
+function normalizeLeagueBits(leagueArg) {
+  // Explicit object
+  if (leagueArg && typeof leagueArg === "object") {
+    const league_id = leagueArg.league_id ?? leagueArg.leagueId ?? null;
+    const league_slug = leagueArg.league_slug ?? leagueArg.leagueSlug ?? null;
+
+    if (league_id != null) return { league_id: String(league_id) };
+    if (league_slug) return { league_slug: String(league_slug) };
+
+    throw new Error("Invalid league argument: missing league_id or league_slug.");
+  }
+
+  // Explicit primitive league id
+  if (leagueArg != null) {
+    return { league_id: String(leagueArg) };
+  }
+
+  // Default to current league context
+  const id = getLeagueId();
+  if (id != null) return { league_id: String(id) };
+
+  const slug = getLeagueSlug();
+  if (slug) return { league_slug: String(slug) };
+
+  throw new Error("No active league selected.");
+}
+
+function leagueKeyFromBits(bits) {
+  if (bits.league_id != null) return `id:${bits.league_id}`;
+  if (bits.league_slug != null) return `slug:${String(bits.league_slug).toLowerCase()}`;
+  return "none";
+}
+
+function withLeague(path) {
+  // implicit (current context)
+  const params = new URLSearchParams(normalizeLeagueBits(null));
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}${params.toString()}`;
+}
+
+function withLeagueExplicit(path, leagueArg) {
+  const params = new URLSearchParams(normalizeLeagueBits(leagueArg));
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}${params.toString()}`;
+}
+
+// ----------------------------
 // API calls
 // ----------------------------
 
-export async function getSeasons() {
-  return cached("seasons", async () => {
-    const res = await fetch(`${API_BASE}/seasons`);
+export async function getSeasons(leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `seasons:${leagueKeyFromBits(bits)}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/seasons`, bits));
     return handle(res);
   });
 }
 
-export async function getSeasonDashboard(seasonId) {
-  return cached(`season-dashboard:${seasonId}`, async () => {
-    const res = await fetch(`${API_BASE}/seasons/${seasonId}/dashboard`);
+export async function getSeasonDashboard(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-dashboard:${leagueKeyFromBits(bits)}:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/seasons/${seasonId}/dashboard`, bits));
     return handle(res);
   });
 }
 
-export async function getSeasonBadges(seasonId) {
-  return cached(`season-badges:${seasonId}`, async () => {
-    const res = await fetch(`${API_BASE}/seasons/${seasonId}/badges`);
+export async function getSeasonBadges(seasonId, leagueArg) {
+  // NOTE: your backend route /seasons/:id/badges currently is NOT league-scoped.
+  // If/when you add league scope, this already supports it.
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-badges:${leagueKeyFromBits(bits)}:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/seasons/${seasonId}/badges`, bits));
     return handle(res);
   });
 }
 
-export async function getCoaches(leagueType = "major") {
-  const qs = leagueType ? `?league_type=${encodeURIComponent(leagueType)}` : "";
-  return cached(`coaches:${leagueType}`, async () => {
-    const res = await fetch(`${API_BASE}/coaches${qs}`);
+export async function getCoaches(leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `coaches:${leagueKeyFromBits(bits)}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/coaches`, bits));
     return handle(res);
   });
 }
 
 export async function getPokemonCareerStats() {
   return cached("pokemon-career-stats", async () => {
-    const res = await fetch(`${API_BASE}/pokemon/stats`);
+    const res = await apiFetch(`/pokemon/stats`);
     return handle(res);
   });
 }
 
 export async function runPokemonStatsRollup() {
-  const res = await fetch(`${API_BASE}/pokemon/stats/run`);
+  const res = await apiFetch(`/pokemon/stats/run`);
   const out = await handle(res);
   clearApiCache("pokemon-career-stats");
   return out;
 }
 
-export async function getCoachCrosstable(namesCsv = "", leagueType = "") {
-  const params = new URLSearchParams();
-  if (namesCsv?.trim()) params.set("names", namesCsv.trim());
-  if (leagueType?.trim()) params.set("league_type", leagueType.trim());
-
-  const qs = params.toString() ? `?${params.toString()}` : "";
-  const key = `crosstable:${params.toString() || "all"}`;
+export async function getCoachCrosstable(namesCsv = "", leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `crosstable:${leagueKeyFromBits(bits)}:${namesCsv || ""}`;
 
   return cached(key, async () => {
-    const res = await fetch(`${API_BASE}/coaches/crosstable${qs}`);
+    const params = new URLSearchParams();
+    if (namesCsv?.trim()) params.set("names", namesCsv.trim());
+    Object.entries(bits).forEach(([k, v]) => params.set(k, v));
+
+    const res = await apiFetch(`/coaches/crosstable?${params.toString()}`);
     return handle(res);
   });
 }
 
+// If you don't actually have this endpoint, you can delete this.
 export async function refreshCoachCrosstableCache() {
-  const res = await fetch(`${API_BASE}/coaches/crosstable/refresh`, { method: "POST" });
+  const res = await apiFetch(`/coaches/crosstable/refresh`, { method: "POST" });
   const out = await handle(res);
   clearApiCache("crosstable:");
   return out;
 }
 
-export async function getMvps(leagueType) {
-  const qs = leagueType ? `?league_type=${encodeURIComponent(leagueType)}` : "";
-  const key = `mvps:${leagueType || "all"}`;
-
+export async function getMvps(leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `mvps:${leagueKeyFromBits(bits)}`;
   return cached(key, async () => {
-    const res = await fetch(`${API_BASE}/mvps${qs}`);
+    const res = await apiFetch(withLeagueExplicit(`/mvps`, bits));
     return handle(res);
   });
 }
 
-export async function getBadges(leagueType = "major") {
-  const qs = leagueType ? `?league_type=${encodeURIComponent(leagueType)}` : "";
-  const key = `badges:${leagueType}`;
-
+export async function getBadges(leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `badges:${leagueKeyFromBits(bits)}`;
   return cached(key, async () => {
-    const res = await fetch(`${API_BASE}/badges${qs}`);
+    const res = await apiFetch(withLeagueExplicit(`/badges`, bits));
     return handle(res);
   });
 }
 
-export async function getCoachProfileByName(name) {
-  return cached(`coach-profile:${name.toLowerCase()}`, async () => {
-    const res = await fetch(`${API_BASE}/coaches/by-name/${encodeURIComponent(name)}/profile`);
+export async function getCoachProfileByName(name, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `coach-profile:${leagueKeyFromBits(bits)}:${(name ?? "").toLowerCase()}`;
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/coaches/by-name/${encodeURIComponent(name)}/profile`, bits)
+    );
     return handle(res);
   });
 }
 
-export async function getCoachSeasonDetails(coachId, seasonId) {
-  return cached(`coach-season-details:${coachId}:${seasonId}`, async () => {
-    const res = await fetch(`${API_BASE}/coaches/${coachId}/seasons/${seasonId}/details`);
+export async function getCoachSeasonDetails(coachId, seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `coach-season-details:${leagueKeyFromBits(bits)}:${coachId}:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/coaches/${coachId}/seasons/${seasonId}/details`, bits)
+    );
     return handle(res);
   });
+}
+
+export async function getMyOrganizations() {
+  return cached("my-orgs", async () => {
+    const res = await apiFetch(`/organizations/mine`);
+    return handle(res);
+  });
+}
+
+export async function createOrganization({ name, slug, description }) {
+  const res = await apiFetch(`/organizations`, {
+    method: "POST",
+    body: JSON.stringify({ name, slug, description }),
+  });
+  clearApiCache("my-orgs");
+  return handle(res);
+}
+
+export async function getOrganizationLeagues(orgSlug) {
+  return cached(`org-leagues:${orgSlug}`, async () => {
+    const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/leagues`);
+    return handle(res);
+  });
+}
+
+// kept for backwards compatibility if you were using getOrgLeagues()
+export async function getOrgLeagues(orgSlug) {
+  return getOrganizationLeagues(orgSlug);
+}
+
+export async function createLeague({ organization_slug, name, slug, description }) {
+  const res = await apiFetch(`/leagues`, {
+    method: "POST",
+    body: JSON.stringify({ organization_slug, name, slug, description }),
+  });
+  clearApiCache(`org-leagues:${organization_slug}`);
+  return handle(res);
+}
+
+export async function getLeagueMe(leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const qs = new URLSearchParams(bits).toString();
+  const res = await apiFetch(`/auth/league-me?${qs}`);
+  return handle(res);
 }
