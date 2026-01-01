@@ -101,7 +101,7 @@
     <form on:submit|preventDefault={onSubmit} class="form">
       <label>
         Organization
-        <select bind:value={organization_slug} disabled={saving || orgs.length === 0}>
+        <select class="select" bind:value={organization_slug} disabled={saving || orgs.length === 0}>
           {#each orgs as o}
             <option value={o.slug}>{o.name} ({o.slug})</option>
           {/each}

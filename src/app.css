@@ -1,8 +1,30 @@
+/*
+  Responsive sizing strategy (site-wide)
+  -------------------------------------
+  This makes the UI feel less "stuck in the middle" on wide screens while
+  staying comfortable on laptop-sized windows.
+
+  Key ideas:
+  - Fluid base font-size via clamp(): rem-based spacing/typography scales with viewport.
+  - Responsive container max-width so #app uses more horizontal space when available.
+*/
+
 :root {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.5;
   color: #111827;
   background-color: #0b1120;
+
+  /* Fluid type: scales from ~14px on small screens up to ~18px on large screens */
+  --base-font-size: clamp(14px, 0.9vw + 10px, 18px);
+
+  /* Content sizing: keeps things readable on laptops, uses space on big monitors */
+  --content-max: 1600px;
+  --content-pad: clamp(12px, 1.6vw, 28px);
+}
+
+html {
+  font-size: var(--base-font-size);
 }
 
 body {
@@ -16,9 +38,10 @@ body {
 }
 
 .app-shell {
-  max-width: 1200px;
+  /* Use most of the window when available, but never exceed a sensible max */
+  max-width: min(var(--content-max), 96vw);
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: var(--content-pad);
 }
 
 .app-header {
@@ -80,6 +103,19 @@ body {
   outline-offset: 2px;
 }
 
+select:not(.unstyled) {
+  background: rgba(15, 23, 42, 0.9);
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  padding: 0.35rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+select:not(.unstyled):focus {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -97,7 +133,7 @@ body {
   white-space: nowrap;
 }
 
-.table tbody tr:nth-child(every-odd) {
+.table tbody tr:nth-child(odd) {
   background: rgba(15, 23, 42, 0.8);
 }
 
@@ -130,4 +166,8 @@ body {
 .muted {
   color: #9ca3af;
   font-size: 0.8rem;
+}
+
+html, body {
+  overflow-x: hidden;
 }

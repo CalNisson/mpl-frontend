@@ -108,8 +108,18 @@ export function logout() {
 function normalizeLeagueBits(leagueArg) {
   // Explicit object
   if (leagueArg && typeof leagueArg === "object") {
-    const league_id = leagueArg.league_id ?? leagueArg.leagueId ?? null;
-    const league_slug = leagueArg.league_slug ?? leagueArg.leagueSlug ?? null;
+    // accept both the API-style keys and your ctx-style keys
+    const league_id =
+      leagueArg.league_id ??
+      leagueArg.leagueId ??
+      leagueArg.id ??
+      null;
+
+    const league_slug =
+      leagueArg.league_slug ??
+      leagueArg.leagueSlug ??
+      leagueArg.slug ??
+      null;
 
     if (league_id != null) return { league_id: String(league_id) };
     if (league_slug) return { league_slug: String(league_slug) };
@@ -191,6 +201,55 @@ export async function getCoaches(leagueArg) {
     const res = await apiFetch(withLeagueExplicit(`/coaches`, bits));
     return handle(res);
   });
+}
+
+export async function getAllCoaches() {
+  return cached("coaches:all", async () => {
+    const res = await apiFetch(`/coaches/all`, { method: "GET" });
+    return handle(res);
+  });
+}
+
+// ----------------------------
+// Season teams (manage season participants)
+// ----------------------------
+
+export async function getSeasonTeams(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-teams:${leagueKeyFromBits(bits)}:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/seasons/${seasonId}/teams`, bits));
+    return handle(res);
+  });
+}
+
+export async function createSeasonTeam(seasonId, payload, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const res = await apiFetch(withLeagueExplicit(`/seasons/${seasonId}/teams`, bits), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  const out = await handle(res);
+  clearApiCache(`season-teams:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("seasons:");
+  return out;
+}
+
+export async function updateSeasonTeam(seasonId, teamId, payload, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/teams/${teamId}`, bits),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+  const out = await handle(res);
+  clearApiCache(`season-teams:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("seasons:");
+  return out;
 }
 
 export async function getPokemonCareerStats() {
@@ -311,4 +370,194 @@ export async function getLeagueMe(leagueArg) {
   const qs = new URLSearchParams(bits).toString();
   const res = await apiFetch(`/auth/league-me?${qs}`);
   return handle(res);
+}
+
+
+export async function createSeason({ league_id, name, start_date, format }) {
+  const res = await apiFetch(`/seasons`, {
+    method: "POST",
+    body: JSON.stringify({ league_id, name, start_date, format }),
+  });
+  clearApiCache("seasons:");
+  clearApiCache("season-dashboard:");
+  return handle(res);
+}
+
+// ----------------------------
+// Tier List (season-scoped)
+// ----------------------------
+
+export async function getSeasonTierList(seasonId, opts = {}) {
+  const includeHidden = !!opts?.include_hidden;
+
+  // IMPORTANT: include_hidden changes the response, so it must be part of the cache key
+  const key = `season-tierlist:${seasonId}:hidden=${includeHidden ? 1 : 0}`;
+
+  return cached(key, async () => {
+    const params = new URLSearchParams();
+    if (includeHidden) params.set("include_hidden", "true");
+
+    const qs = params.toString();
+    const url = qs
+      ? `/seasons/${seasonId}/tierlist?${qs}`
+      : `/seasons/${seasonId}/tierlist`;
+
+    const res = await apiFetch(url, { method: "GET" });
+    return handle(res);
+  });
+}
+
+export async function patchSeasonTierAssignments(seasonId, changes) {
+  if (!Array.isArray(changes) || changes.length === 0) {
+    throw new Error("patchSeasonTierAssignments: changes must be a non-empty array");
+  }
+
+  const res = await apiFetch(`/seasons/${seasonId}/tierlist/assignments`, {
+    method: "PATCH",
+    body: JSON.stringify({ changes }),
+  });
+
+  const out = await handle(res);
+
+  clearApiCache(`season-tierlist:${seasonId}:hidden=`);
+  clearApiCache("season-dashboard:");
+
+  return out;
+}
+
+export async function createSeasonTier(
+  seasonId,
+  { name, sort_order, is_banned, is_undraftable }
+) {
+  const res = await apiFetch(`/seasons/${seasonId}/tierlist/tiers`, {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      sort_order: sort_order ?? 50,
+      is_banned: is_banned ?? false,
+      is_undraftable: is_undraftable ?? false,
+    }),
+  });
+
+  clearApiCache(`season-tierlist:${seasonId}:hidden=`);
+  return handle(res);
+}
+
+export async function putTierColumns(tierId, points) {
+  const res = await apiFetch(`/tiers/${tierId}/columns`, {
+    method: "PUT",
+    body: JSON.stringify({ points }),
+  });
+
+  clearApiCache("season-tierlist:");
+  return handle(res);
+}
+
+export async function patchTier(tierId, payload) {
+  const res = await apiFetch(`/tiers/${tierId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+
+  clearApiCache("season-tierlist:");
+  return handle(res);
+}
+
+export async function deleteTier(tierId) {
+  const res = await apiFetch(`/tiers/${tierId}`, {
+    method: "DELETE",
+  });
+
+  clearApiCache("season-tierlist:");
+  return handle(res);
+}
+
+export async function patchSeasonTierListSettings(seasonId, payload) {
+  const res = await apiFetch(`/seasons/${seasonId}/tierlist`, {
+    method: "PATCH",
+    body: JSON.stringify(payload ?? {}),
+  });
+
+  clearApiCache(`season-tierlist:${seasonId}:hidden=`);
+  clearApiCache("season-dashboard:");
+  return handle(res);
+}
+
+// ----------------------------
+// Draft (season-scoped)
+// ----------------------------
+
+export async function getDraftSnapshot(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft`, { method: "GET" });
+  return handle(res);
+}
+
+export async function listDraftCandidates(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/candidates`, { method: "GET" });
+  return handle(res);
+}
+
+export async function putDraftSettings(seasonId, payload) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/settings`, {
+    method: "PUT",
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handle(res);
+}
+
+export async function addDraftTeamToSeason(seasonId, payload) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/teams`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handle(res);
+}
+
+export async function putDraftOrder(seasonId, team_ids) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/order`, {
+    method: "PUT",
+    body: JSON.stringify({ team_ids }),
+  });
+  return handle(res);
+}
+
+export async function randomizeDraftOrder(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/order/randomize`, {
+    method: "POST",
+  });
+  return handle(res);
+}
+
+export async function startDraft(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/start`, { method: "POST" });
+  return handle(res);
+}
+
+export async function pauseDraft(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/pause`, { method: "POST" });
+  return handle(res);
+}
+
+export async function endDraft(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/end`, { method: "POST" });
+  return handle(res);
+}
+
+export async function skipDraftTurn(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/skip`, { method: "POST" });
+  return handle(res);
+}
+
+export async function makeDraftPick(seasonId, payload) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/pick`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handle(res);
+}
+
+export async function deleteSeasonTeam(seasonId, teamId) {
+  return apiFetch(`/seasons/${seasonId}/teams/${teamId}`, {
+    method: "DELETE",
+  });
 }

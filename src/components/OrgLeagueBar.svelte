@@ -54,8 +54,9 @@
     setLeague(null);
     leagues = [];
 
-    if (org) await loadLeaguesForOrg(org.slug);
-}
+    if (!org) return;
+    await loadLeaguesForOrg(org.slug);
+  }
 
 
   function onLeagueChange(e) {

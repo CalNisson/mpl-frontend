@@ -92,27 +92,16 @@
       <div class="context-inner">
         <OrgLeagueBar />
 
-        {#if ready}
+        {#if hasOrg || hasLeague}
           <button class="ghost" on:click={clearSelection}>
-            Change selection
+            Clear selection
           </button>
         {/if}
       </div>
     </div>
   {/if}
 
-  <!-- Route content gating -->
-  {#if needsLeagueContext && !ready}
-    <div class="gate card">
-      <div class="gate-title">Select an Organization and League</div>
-      <div class="muted">
-        Choose an organization first, then pick a league. Once both are selected,
-        this page will load the full dashboard.
-      </div>
-    </div>
-  {:else}
-    <Router {routes} />
-  {/if}
+  <Router {routes} />
 </div>
 
 <style>
