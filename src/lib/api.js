@@ -183,6 +183,51 @@ export async function getSeasonDashboard(seasonId, leagueArg) {
   });
 }
 
+// ----------------------------
+// Schedule (regular season)
+// ----------------------------
+
+export async function getSeasonSchedule(seasonId) {
+  const key = `season-schedule:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(`/seasons/${seasonId}/schedule`, { method: "GET" });
+    return handle(res);
+  });
+}
+
+export async function generateSeasonSchedule(seasonId, { weeks, overwrite = true }) {
+  const res = await apiFetch(`/seasons/${seasonId}/schedule/generate`, {
+    method: "POST",
+    body: JSON.stringify({ weeks, overwrite }),
+  });
+  return handle(res);
+}
+
+export async function createSeasonScheduleMatch(seasonId, { week, team1_id, team2_id }) {
+  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches`, {
+    method: "POST",
+    body: JSON.stringify({ week, team1_id, team2_id }),
+  });
+  return handle(res);
+}
+
+export async function deleteSeasonScheduleMatch(seasonId, matchId) {
+  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
+    method: "DELETE",
+  });
+  return handle(res);
+}
+
+// Patch (edit) a scheduled regular-season match
+// body can include: { week?: number, team1_id?: number, team2_id?: number }
+export async function patchSeasonScheduleMatch(seasonId, matchId, body) {
+  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
 export async function getSeasonBadges(seasonId, leagueArg) {
   // NOTE: your backend route /seasons/:id/badges currently is NOT league-scoped.
   // If/when you add league scope, this already supports it.

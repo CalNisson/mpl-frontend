@@ -17,6 +17,7 @@
   import TierListEditor from "../components/TierListEditor.svelte";
   import DraftManager from "../components/DraftManager.svelte";
   import SeasonTeamsManager from "../components/SeasonTeamsManager.svelte";
+  import SeasonSchedule from "../components/SeasonSchedule.svelte";
   import { clearApiCache } from "../lib/api.js";
 
   $: ctx = $leagueContext;
@@ -115,7 +116,7 @@
   }
 
   // ---- Tabs ----
-  const tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft"];
+  const tabs = ["Overview", "Leaderboard", "Schedule", "Teams", "Tier List", "Draft"];
   let tab = "Overview";
   function setTab(next) {
     tab = next;
@@ -938,6 +939,13 @@
             <StandingsTable {teams} {matches} {matchGames} />
             <PokemonLeaderboard stats={pokemonStats} />
           </div>
+
+        {:else if tab === "Schedule"}
+          <SeasonSchedule
+            seasonId={activeSeason?.id}
+            teams={teamsMerged}
+            canEdit={isLeagueMaster}
+          />
 
         {:else if tab === "Teams"}
           {#if activeSeason?.id && isLeagueMaster}
