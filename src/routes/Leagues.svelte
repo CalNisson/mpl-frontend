@@ -16,8 +16,9 @@
   import PokemonLeaderboard from "../components/PokemonLeaderboard.svelte";
   import TierListEditor from "../components/TierListEditor.svelte";
   import DraftManager from "../components/DraftManager.svelte";
+  import TransactionsManager from "../components/TransactionsManager.svelte";
   import SeasonTeamsManager from "../components/SeasonTeamsManager.svelte";
-  import SeasonSchedule from "../components/SeasonSchedule.svelte";
+  import MatchReporting from "../components/MatchReporting.svelte";
   import { clearApiCache } from "../lib/api.js";
 
   $: ctx = $leagueContext;
@@ -116,7 +117,9 @@
   }
 
   // ---- Tabs ----
-  const tabs = ["Overview", "Leaderboard", "Schedule", "Teams", "Tier List", "Draft"];
+  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Transactions"].concat(
+    isLeagueMaster ? ["Match Reporting"] : []
+  );
   let tab = "Overview";
   function setTab(next) {
     tab = next;
@@ -940,13 +943,6 @@
             <PokemonLeaderboard stats={pokemonStats} />
           </div>
 
-        {:else if tab === "Schedule"}
-          <SeasonSchedule
-            seasonId={activeSeason?.id}
-            teams={teamsMerged}
-            canEdit={isLeagueMaster}
-          />
-
         {:else if tab === "Teams"}
           {#if activeSeason?.id && isLeagueMaster}
             <SeasonTeamsManager
@@ -1185,6 +1181,9 @@
             {/if}
           </div>
 
+        {:else if tab === "Transactions"}
+          <TransactionsManager seasonId={activeSeason.id} leagueId={ctx?.league?.id} canEdit={isLeagueMaster} />
+
         {:else if tab === "Tier List"}
           <div style="margin-top:.75rem;">
             {#if !activeSeason?.id}
@@ -1200,6 +1199,17 @@
               <div class="card muted">No active season selected.</div>
             {:else}
               <DraftManager seasonId={activeSeason.id} canEdit={isLeagueMaster} />
+            {/if}
+          </div>
+
+        {:else if tab === "Match Reporting"}
+          <div style="margin-top:.75rem;">
+            {#if !isLeagueMaster}
+              <div class="card muted">You do not have permission to view this tab.</div>
+            {:else if !activeSeason?.id}
+              <div class="card muted">No active season selected.</div>
+            {:else}
+              <MatchReporting seasonId={activeSeason.id} canEdit={isLeagueMaster} />
             {/if}
           </div>
         {/if}

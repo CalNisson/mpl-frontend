@@ -200,7 +200,12 @@ export async function generateSeasonSchedule(seasonId, { weeks, overwrite = true
     method: "POST",
     body: JSON.stringify({ weeks, overwrite }),
   });
-  return handle(res);
+  const out = await handle(res);
+
+  // bust schedule cache so UI updates immediately
+  clearApiCache(`season-schedule:${seasonId}`);
+
+  return out;
 }
 
 export async function createSeasonScheduleMatch(seasonId, { week, team1_id, team2_id }) {
@@ -208,24 +213,39 @@ export async function createSeasonScheduleMatch(seasonId, { week, team1_id, team
     method: "POST",
     body: JSON.stringify({ week, team1_id, team2_id }),
   });
-  return handle(res);
+  const out = await handle(res);
+
+  // bust schedule cache so UI updates immediately
+  clearApiCache(`season-schedule:${seasonId}`);
+
+  return out;
 }
 
 export async function deleteSeasonScheduleMatch(seasonId, matchId) {
   const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
     method: "DELETE",
   });
-  return handle(res);
+  const out = await handle(res);
+
+  // bust schedule cache so UI updates immediately
+  clearApiCache(`season-schedule:${seasonId}`);
+
+  return out;
 }
 
 // Patch (edit) a scheduled regular-season match
-// body can include: { week?: number, team1_id?: number, team2_id?: number }
+// body can include: { week?: number, team1_id?: number, team2_id?: number, replay?: string | null }
 export async function patchSeasonScheduleMatch(seasonId, matchId, body) {
   const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
     method: "PATCH",
     body: JSON.stringify(body ?? {}),
   });
-  return handle(res);
+  const out = await handle(res);
+
+  // bust schedule cache so UI updates immediately
+  clearApiCache(`season-schedule:${seasonId}`);
+
+  return out;
 }
 
 export async function getSeasonBadges(seasonId, leagueArg) {
@@ -417,7 +437,6 @@ export async function getLeagueMe(leagueArg) {
   return handle(res);
 }
 
-
 export async function createSeason({ league_id, name, start_date, format }) {
   const res = await apiFetch(`/seasons`, {
     method: "POST",
@@ -601,8 +620,150 @@ export async function makeDraftPick(seasonId, payload) {
   return handle(res);
 }
 
-export async function deleteSeasonTeam(seasonId, teamId) {
-  return apiFetch(`/seasons/${seasonId}/teams/${teamId}`, {
-    method: "DELETE",
+// ----------------------------
+// Season teams (delete) - FIXED
+// ----------------------------
+
+// NOTE: now properly returns parsed JSON (or null on 204) and clears caches.
+// Added optional leagueArg at end to match the rest of the season-team API.
+export async function deleteSeasonTeam(seasonId, teamId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/teams/${teamId}`, bits),
+    { method: "DELETE" }
+  );
+
+  const out = await handle(res);
+
+  clearApiCache(`season-teams:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("seasons:");
+  clearApiCache("season-dashboard:");
+
+  return out;
+}
+
+// ----------------------------
+// Match Reporting (season-scoped)
+// ----------------------------
+
+export async function getSeasonMatchesForReporting(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-matches-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`;
+
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/seasons/${seasonId}/matches/reporting`, bits),
+      { method: "GET" }
+    );
+    return handle(res);
   });
+}
+
+export async function getSeasonRostersForReporting(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-rosters-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`;
+
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/seasons/${seasonId}/rosters/reporting`, bits),
+      { method: "GET" }
+    );
+    return handle(res);
+  });
+}
+
+// Upload a completed match report.
+// Expects `payload` to be a plain JS object that matches your backend schema.
+export async function uploadMatchReport(seasonId, payload, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/matches/reporting`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+
+  const out = await handle(res);
+
+  // Bust anything that might be stale after reporting
+  clearApiCache(`season-matches-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`season-dashboard:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("pokemon-career-stats");
+
+  return out;
+}
+
+
+// ----------------------------
+// Transactions
+// ----------------------------
+
+export async function getSeasonTransactions(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-transactions:${leagueKeyFromBits(bits)}:${seasonId}`;
+
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/seasons/${seasonId}/transactions`, bits),
+      { method: "GET" }
+    );
+    return handle(res); // expect { trades: [...], free_agency: [...] }
+  });
+}
+
+export async function getTransactionsMeta(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `transactions-meta:${leagueKeyFromBits(bits)}:${seasonId}`;
+
+  return cached(key, async () => {
+    const res = await apiFetch(
+      withLeagueExplicit(`/seasons/${seasonId}/transactions/meta`, bits),
+      { method: "GET" }
+    );
+    return handle(res);
+  });
+}
+
+export async function createTradeTransaction(seasonId, body, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/transactions/trade`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }
+  );
+
+  const out = await handle(res);
+
+  // Bust caches so UI refreshes correctly
+  clearApiCache(`season-transactions:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`transactions-meta:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("season-dashboard:");
+
+  return out;
+}
+
+export async function createFreeAgencyTransaction(seasonId, body, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/transactions/free-agency`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }
+  );
+
+  const out = await handle(res);
+
+  clearApiCache(`season-transactions:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`transactions-meta:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache("season-dashboard:");
+
+  return out;
 }
