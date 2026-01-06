@@ -19,6 +19,7 @@
   import TransactionsManager from "../components/TransactionsManager.svelte";
   import SeasonTeamsManager from "../components/SeasonTeamsManager.svelte";
   import MatchReporting from "../components/MatchReporting.svelte";
+  import PlayoffsPlanner from "../components/PlayoffsPlanner.svelte";
   import { clearApiCache } from "../lib/api.js";
 
   $: ctx = $leagueContext;
@@ -117,7 +118,7 @@
   }
 
   // ---- Tabs ----
-  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Transactions"].concat(
+  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Transactions", "Playoffs"].concat(
     isLeagueMaster ? ["Match Reporting"] : []
   );
   let tab = "Overview";
@@ -423,6 +424,31 @@
       };
     }
   }
+
+  let playoffsPublished = false;
+
+  // localStorage key should match the component
+  function playoffsKey() {
+    const sid = activeSeason?.id ?? "none";
+    const lid = ctx?.league?.id ?? "none";
+    return `mpl.playoffs.${lid}.${sid}.published`;
+  }
+
+  function readPlayoffsPublished() {
+    try {
+      playoffsPublished = JSON.parse(localStorage.getItem(playoffsKey()) || "false");
+    } catch {
+      playoffsPublished = false;
+    }
+  }
+
+  // refresh when league/season changes
+  $: if (hasLeague && activeSeason?.id) {
+    readPlayoffsPublished();
+  } else {
+    playoffsPublished = false;
+  }
+
 
   // ---- lifecycle ----
   onMount(async () => {
@@ -1291,6 +1317,19 @@
             {:else}
               <MatchReporting seasonId={activeSeason.id} canEdit={isLeagueMaster} />
             {/if}
+          </div>
+
+        {:else if tab === "Playoffs"}
+          <div style="margin-top:.75rem;">
+            <PlayoffsPlanner
+              seasonId={activeSeason.id}
+              leagueId={ctx?.league?.id}
+              canEdit={isLeagueMaster}
+              teams={teamsMerged}
+              on:publishedChanged={(e) => {
+                playoffsPublished = !!e.detail.published;
+              }}
+            />
           </div>
         {/if}
       {/if}
