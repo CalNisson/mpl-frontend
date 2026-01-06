@@ -120,14 +120,6 @@
       </div>
     </div>
 
-    <div class="card">
-      <h2 style="margin:0 0 8px 0; font-size:18px;">Team Damage / Remaining over Turns</h2>
-      <div class="hint muted" style="margin-bottom:10px;">
-        Uses backend <code>turnChart</code>: <b>damage</b> = Σ(100 - current HP%) across team. <b>remaining</b> = number of non-fainted Pokémon.
-      </div>
-      <div id="chart"></div>
-    </div>
-
     <details style="margin-top:12px;" class="card">
       <summary>Debug: replay log</summary>
       <textarea id="logOut" spellcheck="false"></textarea>
@@ -249,7 +241,7 @@ var Replay;
           break;
         case "win":
           this.upkeep(line.turn);
-          this.updateChart(line.turn?.number ?? 0);
+          this.updateChart(line.turn);
           let winPlayer = this.playerData.findIndex(
             (player) => player.username == line.data[1]
           );
@@ -1354,7 +1346,6 @@ export {
   validateUrl
 };
 
-
 const $ = (id) => document.getElementById(id);
 
 function normalizeReplayUrl(url) {
@@ -1365,18 +1356,52 @@ function normalizeReplayUrl(url) {
   return url.replace(/\/$/, "");
 }
 
-function showdownToPokeApiSlug(name) {
-  return name
-    .toLowerCase()
+// ---------- name formatting (MPL expectations) ----------
+// Only show gender for gender-specific forms, as "Name (Male/Female)".
+const GENDERED_FORMS = new Set(["meowstic", "indeedee", "basculegion", "oinkologne"]);
+
+function titleCaseSpecies(s) {
+  if (!s) return s;
+  // keep hyphenated names nicely: "ho-oh" -> "Ho-oh" (Showdown uses "Ho-Oh" anyway, but safe)
+  return s.split("-").map((part) => part ? (part.charAt(0).toUpperCase() + part.slice(1)) : part).join("-");
+}
+
+// Parse Showdown details string like:
+// "Meowstic, M, shiny" or "Indeedee, F" or "Gallade, shiny" etc.
+function parseDetail(detail) {
+  const raw = (detail || "").trim();
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  const base = parts[0] || "";
+  const baseId = base.toLowerCase()
     .replace(/['’]/g, "")
     .replace(/\./g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+
+  let gender = null; // "M" | "F" | null
+  for (const p of parts.slice(1)) {
+    const u = p.toUpperCase();
+    if (u === "M" || u === "MALE") { gender = "M"; break; }
+    if (u === "F" || u === "FEMALE") { gender = "F"; break; }
+  }
+
+  const isGenderedForm = GENDERED_FORMS.has(baseId);
+  const displayName = isGenderedForm && gender
+    ? `${base} (${gender === "M" ? "Male" : "Female"})`
+    : base;
+
+  // Sprite key should be pokeapi slug, with -male/-female for gendered forms.
+  const spriteKey = isGenderedForm && gender
+    ? `${baseId}-${gender === "M" ? "male" : "female"}`
+    : baseId;
+
+  return { base, baseId, gender, displayName, spriteKey };
 }
 
-async function fetchPokemonSprite(speciesName) {
-  const slug = showdownToPokeApiSlug(speciesName);
+async function fetchPokemonSpriteByKey(spriteKey) {
+  const slug = (spriteKey || "").trim();
+  if (!slug) return null;
   const url = `https://pokeapi.co/api/v2/pokemon/${slug}`;
   const res = await fetch(url);
   if (!res.ok) return null;
@@ -1508,15 +1533,19 @@ async function renderTeamCard(stat, containerId) {
     </div>
   `;
 
-  // show sprites from formes details
-  const speciesList = (stat.team || []).map(m => (m.formes?.[0]?.detail || "").split(",")[0]).filter(Boolean);
-  const sprites = await Promise.all(speciesList.map(async (sp) => ({ species: sp, url: await fetchPokemonSprite(sp) })));
+  // Show sprites from formes details (display = base name, with gender only for gendered forms).
+  const details = (stat.team || []).map(m => (m.formes?.[0]?.detail || "")).filter(Boolean);
+  const mons = details.map((d) => parseDetail(d)).filter((x) => x.baseId);
+
+  const spritePairs = await Promise.all(
+    mons.map(async (m) => ({ display: m.displayName, key: m.spriteKey, url: await fetchPokemonSpriteByKey(m.spriteKey) }))
+  );
 
   const spr = document.createElement("div");
   spr.className = "sprites";
-  spr.innerHTML = sprites.map(x => `
-    <div class="sprite" title="${x.species}">
-      ${x.url ? `<img alt="${x.species}" src="${x.url}" />` : `<span class="muted" style="font-size:11px; padding:6px; text-align:center;">${x.species}</span>`}
+  spr.innerHTML = spritePairs.map(x => `
+    <div class="sprite" title="${x.display}">
+      ${x.url ? `<img alt="${x.display}" src="${x.url}" />` : `<span class="muted" style="font-size:11px; padding:6px; text-align:center;">${x.display}</span>`}
     </div>`).join("");
   container.appendChild(spr);
 }
@@ -1534,14 +1563,19 @@ async function renderMonTable(stat, tbodyId) {
   const tbody = $(tbodyId);
   tbody.innerHTML = "";
 
-  const speciesList = mons.map(m => (m.formes?.[0]?.detail || "").split(",")[0]).filter(Boolean);
-  const spritePairs = await Promise.all(speciesList.map(async (sp) => ({ sp, url: await fetchPokemonSprite(sp) })));
-  const spriteMap = new Map(spritePairs.filter(x=>x.url).map(x=>[x.sp, x.url]));
+  const details = mons.map(m => (m.formes?.[0]?.detail || "")).filter(Boolean);
+  const parsed = details.map((d) => ({ detail: d, ...parseDetail(d) })).filter((x) => x.baseId);
+
+  const spritePairs = await Promise.all(parsed.map(async (x) => ({ key: x.spriteKey, url: await fetchPokemonSpriteByKey(x.spriteKey) })));
+  const spriteMap = new Map(spritePairs.filter(x=>x.url).map(x=>[x.key, x.url]));
 
   for (const m of mons) {
-    const detail = (m.formes?.[0]?.detail || "Unknown");
-    const species = detail.split(",")[0].trim();
-    const sprite = spriteMap.get(species) || null;
+    const detailRaw = (m.formes?.[0]?.detail || "Unknown");
+    const p = parseDetail(detailRaw);
+
+    const display = p.displayName || detailRaw.split(",")[0].trim() || "Unknown";
+    const spriteKey = p.spriteKey || p.baseId || "";
+    const sprite = spriteMap.get(spriteKey) || null;
 
     const kd0 = m.kills?.[0] ?? 0;
     const kd1 = m.kills?.[1] ?? 0;
@@ -1561,9 +1595,9 @@ async function renderMonTable(stat, tbodyId) {
     tr.innerHTML = `
       <td>
         <div class="mon-row">
-          <div class="mon-icon">${sprite ? `<img alt="${species}" src="${sprite}">` : ""}</div>
+          <div class="mon-icon">${sprite ? `<img alt="${display}" src="${sprite}">` : ""}</div>
           <div>
-            <div style="font-weight:700;">${detail}</div>
+            <div style="font-weight:700;">${display}</div>
             <div class="muted" style="font-size:12px;">${m.brought ? "Brought" : "Hidden"}${m.fainted ? " • Fainted" : ""}</div>
           </div>
         </div>
@@ -1599,8 +1633,6 @@ async function renderAll(result) {
     renderMonTable(p1, "monTableP1"),
     renderMonTable(p2, "monTableP2"),
   ]);
-
-  $("chart").innerHTML = buildChart(p1.turnChart, p2.turnChart, p1.username, p2.username);
 }
 
 $("analyzeBtn").addEventListener("click", async () => {

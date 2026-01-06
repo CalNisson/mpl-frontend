@@ -17,35 +17,65 @@
 
   let data = { trades: [], free_agency: [] };
 
-  // sprite cache by pokemon_name -> url
+  // ----------------------------
+  // Sprites (name -> dex fallback)
+  // ----------------------------
   const spriteCache = new Map();
-  async function getSprite(pokemonName) {
-    if (!pokemonName) return "";
-    const key = pokemonName.toLowerCase();
-    if (spriteCache.has(key)) return spriteCache.get(key);
 
-    const slug = key
-      .replace(/♀/g, "-f")
-      .replace(/♂/g, "-m")
-      .replace(/[.'"]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
+  async function getSprite(pokemonName, dexNumber = null) {
+    const nameKey = (pokemonName ?? "").trim().toLowerCase();
+    const dexKey = dexNumber != null ? String(dexNumber) : "";
 
-    try {
-      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+    // Prefer caching by name if we have it, otherwise by dex
+    const cacheKey = nameKey || (dexKey ? `dex:${dexKey}` : "");
+    if (!cacheKey) return "";
+    if (spriteCache.has(cacheKey)) return spriteCache.get(cacheKey);
+
+    const tryFetch = async (path) => {
+      const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${path}`);
       if (!res.ok) throw new Error("pokeapi fetch failed");
       const j = await res.json();
-      const url =
+      return (
         j?.sprites?.other?.["official-artwork"]?.front_default ||
         j?.sprites?.front_default ||
-        "";
-      spriteCache.set(key, url);
-      return url;
-    } catch {
-      spriteCache.set(key, "");
-      return "";
+        ""
+      );
+    };
+
+    // 1) Try by normalized slug from name
+    if (nameKey) {
+      const slug = nameKey
+        .replace(/♀/g, "-f")
+        .replace(/♂/g, "-m")
+        .replace(/[.'"]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
+      try {
+        const url = await tryFetch(slug);
+        spriteCache.set(cacheKey, url);
+        return url;
+      } catch {
+        // fall through to dex
+      }
     }
+
+    // 2) Fallback: try by dex number
+    if (dexNumber != null) {
+      try {
+        const url = await tryFetch(String(dexNumber));
+        spriteCache.set(cacheKey, url);
+        if (nameKey) spriteCache.set(nameKey, url);
+        spriteCache.set(`dex:${dexKey}`, url);
+        return url;
+      } catch {
+        // ignore
+      }
+    }
+
+    spriteCache.set(cacheKey, "");
+    return "";
   }
 
   async function refresh() {
@@ -63,6 +93,81 @@
 
   onMount(refresh);
   $: if (seasonId) refresh();
+
+  // ----------------------------
+  // Trades grouped by week (collapsible)
+  // ----------------------------
+  $: tradesByWeek = (data?.trades ?? []).reduce((acc, t) => {
+    const w = t.week ?? 0;
+    if (!acc[w]) acc[w] = [];
+    acc[w].push(t);
+    return acc;
+  }, {});
+
+  $: tradeWeeks = Object.keys(tradesByWeek)
+    .map((n) => parseInt(n, 10))
+    .sort((a, b) => a - b);
+
+  let openTradeWeeks = new Set();
+  function toggleTradeWeek(w) {
+    const next = new Set(openTradeWeeks);
+    if (next.has(w)) next.delete(w);
+    else next.add(w);
+    openTradeWeeks = next;
+  }
+
+  // ----------------------------
+  // Team color helpers (chip background tint)
+  // ----------------------------
+  function colorOrDefault(c) {
+    const s = (c ?? "").trim();
+    return s ? s : "#000000";
+  }
+
+  function hexToRgba(hex, alpha = 0.18) {
+    const h = (hex ?? "").trim().replace("#", "");
+    if (!h) return `rgba(0,0,0,${alpha})`;
+
+    const full = h.length === 3 ? h.split("").map((ch) => ch + ch).join("") : h;
+    if (full.length !== 6) return `rgba(0,0,0,${alpha})`;
+
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+      return `rgba(0,0,0,${alpha})`;
+    }
+
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  function chipStyle(color) {
+    const c = colorOrDefault(color);
+    return `--team-color:${c}; --team-bg:${hexToRgba(c, 0.18)};`;
+  }
+
+  // ----------------------------
+  // Free Agency grouped by week (collapsible) ✅
+  // ----------------------------
+  $: faByWeek = (data?.free_agency ?? []).reduce((acc, f) => {
+    const w = f.week ?? 0;
+    if (!acc[w]) acc[w] = [];
+    acc[w].push(f);
+    return acc;
+  }, {});
+
+  $: faWeeks = Object.keys(faByWeek)
+    .map((n) => parseInt(n, 10))
+    .sort((a, b) => a - b);
+
+  let openFaWeeks = new Set();
+  function toggleFaWeek(w) {
+    const next = new Set(openFaWeeks);
+    if (next.has(w)) next.delete(w);
+    else next.add(w);
+    openFaWeeks = next;
+  }
 
   // ----------------------------
   // Create modal state
@@ -146,8 +251,14 @@
   $: faCurrentPoints = faCurrentTeam?.roster_points ?? 0;
   $: faCurrentSize = faCurrentTeam?.roster_size ?? 0;
 
-  $: faDropPoints = Array.from(faDrops).reduce((acc, pid) => acc + pointsForPokemon(pid), 0);
-  $: faPickupPoints = Array.from(faPickups).reduce((acc, pid) => acc + pointsForPokemon(pid), 0);
+  $: faDropPoints = Array.from(faDrops).reduce(
+    (acc, pid) => acc + pointsForPokemon(pid),
+    0
+  );
+  $: faPickupPoints = Array.from(faPickups).reduce(
+    (acc, pid) => acc + pointsForPokemon(pid),
+    0
+  );
 
   $: faNewPoints = faCurrentPoints - faDropPoints + faPickupPoints;
   $: faNewSize = faCurrentSize - faDrops.size + faPickups.size;
@@ -159,7 +270,9 @@
 
   $: faOk = faWithinBudget && faWithinRosterMin && faWithinRosterMax;
 
-  $: faMaxAffordable = meta ? meta.team_point_total - (faCurrentPoints - faDropPoints) : 0;
+  $: faMaxAffordable = meta
+    ? meta.team_point_total - (faCurrentPoints - faDropPoints)
+    : 0;
 
   $: faAvailablePokemon = (meta?.pokemon ?? [])
     .filter((p) => !p.is_owned)
@@ -185,14 +298,22 @@
   $: tradeARoster = tradeRosterList(tradeA, tradeASends);
   $: tradeBRoster = tradeRosterList(tradeB, tradeBSends);
 
-  $: tradeAOutPoints = Array.from(tradeASends).reduce((acc, pid) => acc + pointsForPokemon(pid), 0);
-  $: tradeBOutPoints = Array.from(tradeBSends).reduce((acc, pid) => acc + pointsForPokemon(pid), 0);
+  $: tradeAOutPoints = Array.from(tradeASends).reduce(
+    (acc, pid) => acc + pointsForPokemon(pid),
+    0
+  );
+  $: tradeBOutPoints = Array.from(tradeBSends).reduce(
+    (acc, pid) => acc + pointsForPokemon(pid),
+    0
+  );
 
   $: tradeAInPoints = tradeBOutPoints;
   $: tradeBInPoints = tradeAOutPoints;
 
-  $: tradeANewPoints = (tradeA?.roster_points ?? 0) - tradeAOutPoints + tradeAInPoints;
-  $: tradeBNewPoints = (tradeB?.roster_points ?? 0) - tradeBOutPoints + tradeBInPoints;
+  $: tradeANewPoints =
+    (tradeA?.roster_points ?? 0) - tradeAOutPoints + tradeAInPoints;
+  $: tradeBNewPoints =
+    (tradeB?.roster_points ?? 0) - tradeBOutPoints + tradeBInPoints;
 
   $: tradeOk =
     meta &&
@@ -259,119 +380,178 @@
     <div class="tx-sections">
       <div class="tx-section">
         <h3>Trades</h3>
+
         {#if (data.trades ?? []).length === 0}
           <div class="muted">No trades yet.</div>
         {:else}
-          {#each data.trades as t (t.week + ":" + t.team_a_id + ":" + t.team_b_id)}
+          {#each tradeWeeks as w (w)}
             <div class="card">
-              <div class="card-title">
-                <div>Week {t.week}</div>
-                <div class="muted">{t.team_a_name} ↔ {t.team_b_name}</div>
-              </div>
+              <button
+                class="collapse-head"
+                type="button"
+                on:click={() => toggleTradeWeek(w)}
+                aria-expanded={openTradeWeeks.has(w)}
+              >
+                <div class="collapse-title">Week {w}</div>
+                <div class="muted">
+                  {tradesByWeek[w].length} trade{tradesByWeek[w].length === 1 ? "" : "s"}
+                </div>
+                <div class="chev">{openTradeWeeks.has(w) ? "▾" : "▸"}</div>
+              </button>
 
-              <div class="trade-grid">
-                <div class="trade-side">
-                  <div class="trade-side-title">{t.team_a_name} sends</div>
-                  {#each t.team_a_sends as p (p.pokemon_id)}
-                    <div class="poke-row">
-                      {#await getSprite(p.pokemon_name)}
-                        <div class="sprite placeholder"></div>
-                      {:then url}
-                        {#if url}
-                          <img class="sprite" alt={p.pokemon_name} src={url} />
-                        {:else}
-                          <div class="sprite placeholder"></div>
-                        {/if}
-                      {/await}
-                      <div class="poke-name">{p.pokemon_name}</div>
-                      <div class="poke-points">{p.points} pts</div>
+              {#if openTradeWeeks.has(w)}
+                <div class="collapse-body">
+                  {#each tradesByWeek[w] as t (t.team_a_id + ":" + t.team_b_id)}
+                    <div class="trade-card">
+                      <div class="card-title">
+                        <div class="trade-title">
+                          <span class="team-chip" style={chipStyle(t.team_a_color_primary)}>
+                            {t.team_a_name}
+                          </span>
+                          <span class="muted">↔</span>
+                          <span class="team-chip" style={chipStyle(t.team_b_color_primary)}>
+                            {t.team_b_name}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div class="trade-grid">
+                        <div class="trade-side">
+                          <div class="trade-side-title team-accent" style={`--team-color:${colorOrDefault(t.team_a_color_primary)}`}>
+                            {t.team_a_name} sends
+                          </div>
+                          {#each t.team_a_sends as p (p.pokemon_id)}
+                            <div class="poke-row">
+                              {#await getSprite(p.pokemon_name, p.dex_number)}
+                                <div class="sprite placeholder"></div>
+                              {:then url}
+                                {#if url}
+                                  <img class="sprite" alt={p.pokemon_name} src={url} />
+                                {:else}
+                                  <div class="sprite placeholder"></div>
+                                {/if}
+                              {/await}
+                              <div class="poke-name">{p.pokemon_name}</div>
+                              <div class="poke-points">{p.points} pts</div>
+                            </div>
+                          {/each}
+                        </div>
+
+                        <div class="trade-side">
+                          <div class="trade-side-title team-accent" style={`--team-color:${colorOrDefault(t.team_b_color_primary)}`}>
+                            {t.team_b_name} sends
+                          </div>
+                          {#each t.team_b_sends as p (p.pokemon_id)}
+                            <div class="poke-row">
+                              {#await getSprite(p.pokemon_name, p.dex_number)}
+                                <div class="sprite placeholder"></div>
+                              {:then url}
+                                {#if url}
+                                  <img class="sprite" alt={p.pokemon_name} src={url} />
+                                {:else}
+                                  <div class="sprite placeholder"></div>
+                                {/if}
+                              {/await}
+                              <div class="poke-name">{p.pokemon_name}</div>
+                              <div class="poke-points">{p.points} pts</div>
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
                     </div>
                   {/each}
                 </div>
-
-                <div class="trade-side">
-                  <div class="trade-side-title">{t.team_b_name} sends</div>
-                  {#each t.team_b_sends as p (p.pokemon_id)}
-                    <div class="poke-row">
-                      {#await getSprite(p.pokemon_name)}
-                        <div class="sprite placeholder"></div>
-                      {:then url}
-                        {#if url}
-                          <img class="sprite" alt={p.pokemon_name} src={url} />
-                        {:else}
-                          <div class="sprite placeholder"></div>
-                        {/if}
-                      {/await}
-                      <div class="poke-name">{p.pokemon_name}</div>
-                      <div class="poke-points">{p.points} pts</div>
-                    </div>
-                  {/each}
-                </div>
-              </div>
+              {/if}
             </div>
           {/each}
         {/if}
       </div>
 
+      <!-- ---------------------------- -->
+      <!-- Free Agency (grouped by week) ✅ -->
+      <!-- ---------------------------- -->
       <div class="tx-section">
         <h3>Free Agency</h3>
+
         {#if (data.free_agency ?? []).length === 0}
           <div class="muted">No free agency transactions yet.</div>
         {:else}
-          {#each data.free_agency as f (f.week + ":" + f.team_id)}
+          {#each faWeeks as w (w)}
             <div class="card">
-              <div class="card-title">
-                <div>Week {f.week}</div>
-                <div class="muted">{f.team_name}</div>
-              </div>
-
-              <div class="fa-grid">
-                <div>
-                  <div class="trade-side-title">Pickups</div>
-                  {#if (f.pickups ?? []).length === 0}
-                    <div class="muted">None</div>
-                  {:else}
-                    {#each f.pickups as p (p.pokemon_id)}
-                      <div class="poke-row">
-                        {#await getSprite(p.pokemon_name)}
-                          <div class="sprite placeholder"></div>
-                        {:then url}
-                          {#if url}
-                            <img class="sprite" alt={p.pokemon_name} src={url} />
-                          {:else}
-                            <div class="sprite placeholder"></div>
-                          {/if}
-                        {/await}
-                        <div class="poke-name">{p.pokemon_name}</div>
-                        <div class="poke-points">{p.points} pts</div>
-                      </div>
-                    {/each}
-                  {/if}
+              <button
+                class="collapse-head"
+                type="button"
+                on:click={() => toggleFaWeek(w)}
+                aria-expanded={openFaWeeks.has(w)}
+              >
+                <div class="collapse-title">Week {w}</div>
+                <div class="muted">
+                  {faByWeek[w].length} team{faByWeek[w].length === 1 ? "" : "s"}
                 </div>
+                <div class="chev">{openFaWeeks.has(w) ? "▾" : "▸"}</div>
+              </button>
 
-                <div>
-                  <div class="trade-side-title">Drops</div>
-                  {#if (f.drops ?? []).length === 0}
-                    <div class="muted">None</div>
-                  {:else}
-                    {#each f.drops as p (p.pokemon_id)}
-                      <div class="poke-row">
-                        {#await getSprite(p.pokemon_name)}
-                          <div class="sprite placeholder"></div>
-                        {:then url}
-                          {#if url}
-                            <img class="sprite" alt={p.pokemon_name} src={url} />
-                          {:else}
-                            <div class="sprite placeholder"></div>
-                          {/if}
-                        {/await}
-                        <div class="poke-name">{p.pokemon_name}</div>
-                        <div class="poke-points">{p.points} pts</div>
+              {#if openFaWeeks.has(w)}
+                <div class="collapse-body">
+                  {#each faByWeek[w] as f (f.team_id)}
+                    <div class="trade-card">
+                      <div class="card-title">
+                        <div class="team-chip" style={chipStyle(f.team_color_primary)}>
+                          {f.team_name}
+                        </div>
                       </div>
-                    {/each}
-                  {/if}
+
+                      <div class="fa-grid">
+                        <div>
+                          <div class="trade-side-title">Pickups</div>
+                          {#if (f.pickups ?? []).length === 0}
+                            <div class="muted">None</div>
+                          {:else}
+                            {#each f.pickups as p (p.pokemon_id)}
+                              <div class="poke-row">
+                                {#await getSprite(p.pokemon_name, p.dex_number)}
+                                  <div class="sprite placeholder"></div>
+                                {:then url}
+                                  {#if url}
+                                    <img class="sprite" alt={p.pokemon_name} src={url} />
+                                  {:else}
+                                    <div class="sprite placeholder"></div>
+                                  {/if}
+                                {/await}
+                                <div class="poke-name">{p.pokemon_name}</div>
+                                <div class="poke-points">{p.points} pts</div>
+                              </div>
+                            {/each}
+                          {/if}
+                        </div>
+
+                        <div>
+                          <div class="trade-side-title">Drops</div>
+                          {#if (f.drops ?? []).length === 0}
+                            <div class="muted">None</div>
+                          {:else}
+                            {#each f.drops as p (p.pokemon_id)}
+                              <div class="poke-row">
+                                {#await getSprite(p.pokemon_name, p.dex_number)}
+                                  <div class="sprite placeholder"></div>
+                                {:then url}
+                                  {#if url}
+                                    <img class="sprite" alt={p.pokemon_name} src={url} />
+                                  {:else}
+                                    <div class="sprite placeholder"></div>
+                                  {/if}
+                                {/await}
+                                <div class="poke-name">{p.pokemon_name}</div>
+                                <div class="poke-points">{p.points} pts</div>
+                              </div>
+                            {/each}
+                          {/if}
+                        </div>
+                      </div>
+                    </div>
+                  {/each}
                 </div>
-              </div>
+              {/if}
             </div>
           {/each}
         {/if}
@@ -397,7 +577,7 @@
       <div class="form-grid">
         <label>
           Type
-          <select bind:value={createKind}>
+          <select class="select" bind:value={createKind}>
             <option value="trade">Trade</option>
             <option value="fa">Free Agency</option>
           </select>
@@ -413,7 +593,7 @@
         <div class="form-grid">
           <label>
             Team A
-            <select bind:value={tradeTeamA}>
+            <select class="select" bind:value={tradeTeamA}>
               <option value={null} disabled selected>— Select —</option>
               {#each meta.teams as t (t.team_id)}
                 <option value={t.team_id}>{t.team_name}</option>
@@ -423,7 +603,7 @@
 
           <label>
             Team B
-            <select bind:value={tradeTeamB}>
+            <select class="select" bind:value={tradeTeamB}>
               <option value={null} disabled selected>— Select —</option>
               {#each meta.teams as t (t.team_id)}
                 <option value={t.team_id}>{t.team_name}</option>
@@ -498,7 +678,7 @@
         <div class="form-grid">
           <label>
             Team
-            <select bind:value={faTeam}>
+            <select class="select" bind:value={faTeam}>
               <option value={null} disabled selected>— Select —</option>
               {#each meta.teams as t (t.team_id)}
                 <option value={t.team_id}>{t.team_name}</option>
@@ -541,18 +721,20 @@
                 <span class="muted">({faPickups.size} selected)</span>
               </div>
 
-              {#each faAvailablePokemon as p (p.pokemon_id)}
-                <label class="check-row">
-                  <input
-                    type="checkbox"
-                    disabled={p.points > faMaxAffordable && !faPickups.has(p.pokemon_id)}
-                    checked={faPickups.has(p.pokemon_id)}
-                    on:change={() => (faPickups = toggleSet(faPickups, p.pokemon_id))}
-                  />
-                  <span>{p.pokemon_name}</span>
-                  <span class="muted">{p.points} pts</span>
-                </label>
-              {/each}
+              <div class="pickupsScroll">
+                {#each faAvailablePokemon as p (p.pokemon_id)}
+                  <label class="check-row">
+                    <input
+                      type="checkbox"
+                      disabled={p.points > faMaxAffordable && !faPickups.has(p.pokemon_id)}
+                      checked={faPickups.has(p.pokemon_id)}
+                      on:change={() => (faPickups = toggleSet(faPickups, p.pokemon_id))}
+                    />
+                    <span>{p.pokemon_name}</span>
+                    <span class="muted">{p.points} pts</span>
+                  </label>
+                {/each}
+              </div>
 
               {#if (meta.pokemon ?? []).length > faAvailablePokemon.length}
                 <div class="muted small">Showing first {faAvailablePokemon.length} matches.</div>
@@ -680,14 +862,16 @@
     font-weight: 600;
   }
 
-  .trade-grid, .fa-grid {
+  .trade-grid,
+  .fa-grid {
     display: grid;
     grid-template-columns: 1fr;
     gap: 12px;
   }
 
   @media (min-width: 650px) {
-    .trade-grid, .fa-grid {
+    .trade-grid,
+    .fa-grid {
       grid-template-columns: 1fr 1fr;
     }
   }
@@ -734,7 +918,9 @@
   .muted {
     opacity: 0.75;
   }
-  .small { font-size: 12px; }
+  .small {
+    font-size: 12px;
+  }
 
   .btn {
     background: #ff6b6b;
@@ -752,7 +938,7 @@
   .btn.ghost {
     background: transparent;
     color: #eaeaea;
-    border: 1px solid rgba(255,255,255,0.15);
+    border: 1px solid rgba(255, 255, 255, 0.15);
   }
 
   .error {
@@ -767,7 +953,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.55);
+    background: rgba(0, 0, 0, 0.55);
     z-index: 50;
   }
 
@@ -781,7 +967,7 @@
     max-height: calc(100vh - 24px);
     overflow: auto;
     background: #0f1115;
-    border: 1px solid rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 14px;
     padding: 14px;
   }
@@ -821,9 +1007,9 @@
     font-weight: 600;
   }
 
-  input, select {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.14);
+  input {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.14);
     color: #eaeaea;
     border-radius: 10px;
     padding: 8px 10px;
@@ -839,10 +1025,12 @@
     align-items: center;
     gap: 10px;
     padding: 6px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     font-weight: 500;
   }
-  .check-row:last-child { border-bottom: none; }
+  .check-row:last-child {
+    border-bottom: none;
+  }
 
   .summary {
     display: flex;
@@ -855,7 +1043,7 @@
   .confirm {
     margin-top: 14px;
     padding-top: 12px;
-    border-top: 1px solid rgba(255,255,255,0.10);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
   }
   .confirm-grid {
     display: grid;
@@ -863,12 +1051,102 @@
     gap: 12px;
   }
   @media (min-width: 650px) {
-    .confirm-grid { grid-template-columns: 1fr 1fr; }
+    .confirm-grid {
+      grid-template-columns: 1fr 1fr;
+    }
   }
   .confirm-actions {
     display: flex;
     justify-content: flex-end;
     gap: 10px;
     margin-top: 12px;
+  }
+
+  .pickupsScroll {
+    max-height: 420px;
+    overflow: auto;
+    padding-right: 6px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+    padding: 6px 10px;
+  }
+
+  /* Week collapse header */
+  .collapse-head {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+    align-items: center;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: inherit;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  .collapse-title {
+    font-weight: 700;
+  }
+
+  .chev {
+    opacity: 0.8;
+    font-size: 16px;
+  }
+
+  .collapse-body {
+    margin-top: 10px;
+  }
+
+  /* Inner cards within a week group */
+  .trade-card {
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .trade-card:first-child {
+    padding-top: 0;
+    border-top: none;
+  }
+
+  /* Colored team chips (tinted background) */
+  .team-chip {
+    --team-color: #000000;
+    --team-bg: rgba(0, 0, 0, 0.18);
+
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+
+    background: var(--team-bg);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    position: relative;
+  }
+
+  .team-chip::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: var(--team-color);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  }
+
+  .trade-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .team-accent {
+    --team-color: #000000;
+    padding-left: 10px;
+    border-left: 4px solid var(--team-color);
+    border-radius: 4px;
   }
 </style>

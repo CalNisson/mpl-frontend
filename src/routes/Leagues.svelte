@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { leagueContext } from "../lib/leagueStore.js";
   import {
     getMe,
@@ -177,8 +177,34 @@
 
   // ---- Teams accordion state ----
   let openTeamId = null;
-  function toggleTeam(teamId) {
+  async function toggleTeam(teamId) {
     openTeamId = openTeamId === teamId ? null : teamId;
+
+    if (!openTeamId) return;
+
+    // wait for DOM + reactive derived data (teamsMerged / seasonTeams / coachesByName)
+    await tick();
+
+    const team = (teamsMerged ?? []).find((t) => t.id === openTeamId);
+    if (!team) return;
+
+    // Try immediately
+    await loadTeamDetails(team);
+
+    // If coachId wasn’t available yet, try once more next tick (when seasonTeams/coaches might finish)
+    if (!teamDetails?.[openTeamId] || teamDetails[openTeamId]?.error === "__MISSING_COACH__") {
+      await tick();
+      await loadTeamDetails(team);
+    }
+  }
+
+  function getRosterForTeamId(teamId) {
+    const det = teamDetails?.[teamId];
+    const roster = det?.roster ?? [];
+
+    return roster
+      .slice()
+      .sort((a, b) => (b?.differential ?? 0) - (a?.differential ?? 0));
   }
 
   // ---- Team details cache (fetched via getCoachSeasonDetails) ----
@@ -190,6 +216,20 @@
     teamDetails = {};
     openTeamId = null;
   }
+
+  // Derived roster per team (reactive in Svelte 4)
+  $: rosterByTeamId = Object.keys(teamDetails ?? {}).reduce((acc, k) => {
+    const det = teamDetails[k];
+    const roster = Array.isArray(det?.roster) ? det.roster : [];
+    acc[k] = roster.slice().sort((a, b) => (b?.differential ?? 0) - (a?.differential ?? 0));
+    return acc;
+  }, {});
+
+  // Derived roster length (optional convenience)
+  $: rosterLenByTeamId = Object.keys(rosterByTeamId ?? {}).reduce((acc, k) => {
+    acc[k] = rosterByTeamId[k]?.length ?? 0;
+    return acc;
+  }, {});
 
   // ---- Coaches list (league-scoped) ----
   let coaches = [];
@@ -203,6 +243,13 @@
     const k = normName(rawName);
     if (!k) return;
     if (acc[k] == null) acc[k] = coach?.id; // don’t overwrite if duplicate names
+  }
+
+  function spriteCacheKey(p) {
+    if (Number.isInteger(p?.pokemon_id)) return `id:${p.pokemon_id}`;
+    if (Number.isInteger(p?.dex_number)) return `dex:${p.dex_number}`;
+    if (p?.pokemon_name) return `name:${p.pokemon_name}`;
+    return null;
   }
 
   $: coachesByName = (coaches ?? []).reduce((acc, c) => {
@@ -269,26 +316,43 @@
 
   async function loadTeamDetails(team) {
     const teamId = team?.id;
-    const coachId = getTeamCoachId(team);
     const seasonId = activeSeason?.id;
 
-    if (!teamId || !coachId || !seasonId) return;
+    if (!teamId || !seasonId) return;
+
+    const coachId = getTeamCoachId(team);
+
+    // If we can’t resolve coach yet, put a sentinel error so UI shows *something*
+    if (!coachId) {
+      teamDetails = {
+        ...teamDetails,
+        [teamId]: {
+          loading: false,
+          error: "__MISSING_COACH__",
+          details: null,
+          roster: [],
+          transactions: [],
+          summary: null
+        }
+      };
+      return;
+    }
 
     // don’t refetch if already have it (or currently loading)
     if (teamDetails?.[teamId]?.loading) return;
-    if (
-      teamDetails?.[teamId] &&
-      !teamDetails[teamId].error &&
-      !teamDetails[teamId].loading
-    )
-      return;
+    if (teamDetails?.[teamId] && !teamDetails[teamId].error) return;
 
     teamDetails = {
       ...teamDetails,
       [teamId]: {
         ...(teamDetails[teamId] ?? {}),
         loading: true,
-        error: ""
+        error: "",
+        // important: keep these keys present from the start
+        roster: teamDetails?.[teamId]?.roster ?? [],
+        transactions: teamDetails?.[teamId]?.transactions ?? [],
+        summary: teamDetails?.[teamId]?.summary ?? null,
+        details: teamDetails?.[teamId]?.details ?? null
       }
     };
 
@@ -475,12 +539,6 @@
     dashboard?.team_transactions ??
     [];
 
-  // When accordion opens, fetch team details (single pathway)
-  $: if (openTeamId) {
-    const team = (teamsMerged ?? []).find((t) => t.id === openTeamId);
-    if (team) loadTeamDetails(team);
-  }
-
   // ---- Styling helpers ----
   const diffClass = (d) => (d > 0 ? "pos" : d < 0 ? "neg" : "neu");
 
@@ -544,17 +602,33 @@
     return n.replace(/\s+/g, "-");
   }
 
-  async function preloadSprites(names) {
-    const unique = Array.from(new Set((names ?? []).filter(Boolean)));
+  function pokeApiKeyForPokemon(p) {
+    // Prefer dex_number if backend provides it
+    const dex = p?.dex_number;
+    if (Number.isInteger(dex) && dex > 0) return String(dex);
 
-    for (const name of unique) {
-      if (spriteCache[name]) continue;
+    // If your backend pokemon_id is actually natdex, you can use it too:
+    const pid = p?.pokemon_id;
+    if (Number.isInteger(pid) && pid > 0) return String(pid);
 
-      const slug = toPokeApiSlug(name);
-      if (!slug) continue;
+    // Fallback: name slug logic
+    const name = p?.pokemon_name ?? p?.name ?? null;
+    return toPokeApiSlug(name);
+  }
+
+  async function preloadSprites(pokemonList) {
+    const list = (pokemonList ?? []).filter(Boolean);
+
+    for (const p of list) {
+      const cacheKey = spriteCacheKey(p);
+      if (!cacheKey) continue;
+      if (spriteCache[cacheKey]) continue;
+
+      const key = pokeApiKeyForPokemon(p);
+      if (!key) continue;
 
       try {
-        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${slug}`);
+        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${key}`);
         if (!res.ok) continue;
         const data = await res.json();
 
@@ -563,7 +637,7 @@
           data.sprites?.front_default ||
           null;
 
-        if (url) spriteCache = { ...spriteCache, [name]: url };
+        if (url) spriteCache = { ...spriteCache, [cacheKey]: url };
       } catch {
         // ignore
       }
@@ -572,9 +646,9 @@
 
   // Whenever team accordion opens AND teamDetails has loaded, preload sprites for roster + tx
   $: if (openTeamId && teamDetails?.[openTeamId] && !teamDetails[openTeamId].loading) {
-    const rosterNames = (teamDetails[openTeamId].roster ?? []).map((r) => r.pokemon_name);
-    const txNames = (teamDetails[openTeamId].transactions ?? []).map((tr) => tr.pokemon_name);
-    preloadSprites([...rosterNames, ...txNames]);
+    const roster = teamDetails[openTeamId].roster ?? [];
+    const tx = teamDetails[openTeamId].transactions ?? [];
+    preloadSprites([...roster, ...tx]);
   }
 
   // roster for a team:
@@ -1052,6 +1126,9 @@
                           <div class="panel-title">Roster</div>
                           <div class="panel-sub muted">Season totals for this team.</div>
 
+                          <div class="muted" style="margin:6px 0;">
+                            roster len: {rosterLenByTeamId[t.id] ?? 0}
+                          </div>
                           <table class="pretty-table">
                             <thead>
                               <tr>
@@ -1064,15 +1141,14 @@
                               </tr>
                             </thead>
                             <tbody>
-                              {#each getTeamRoster(t) as r}
+                              {#each (rosterByTeamId[t.id] ?? []) as r, i (spriteCacheKey(r) ?? `${t.id}-${i}`)}
                                 <tr>
                                   <td class="sprite-cell">
-                                    {#if spriteCache[r.pokemon_name]}
-                                      <img
-                                        class="pokemon-sprite"
-                                        src={spriteCache[r.pokemon_name]}
-                                        alt={`Sprite of ${r.pokemon_name}`}
-                                      />
+                                    {#if spriteCache[spriteCacheKey(r)]}
+                                      <img class="pokemon-sprite" src={spriteCache[spriteCacheKey(r)]} alt={`Sprite of ${r.pokemon_name}`} />
+                                    {:else}
+                                      <!-- optional: show dex as fallback text/icon -->
+                                      <span class="muted" style="font-size:.75rem;">#{r.dex_number ?? "—"}</span>
                                     {/if}
                                   </td>
                                   <td class="name">{r.pokemon_name}</td>
@@ -1155,8 +1231,12 @@
                                   <div class="tx-mid">
                                     <div class="tx-poke">
                                       <span class="poke-sprite">
-                                        {#if spriteCache[tr.pokemon_name]}
-                                          <img class="pokemon-sprite" src={spriteCache[tr.pokemon_name]} alt={`Sprite of ${tr.pokemon_name}`} />
+                                        {#if spriteCache[spriteCacheKey(tr)]}
+                                          <img
+                                            class="pokemon-sprite"
+                                            src={spriteCache[spriteCacheKey(tr)]}
+                                            alt={`Sprite of ${tr.pokemon_name}`}
+                                          />
                                         {/if}
                                       </span>
                                       <span>{tr.pokemon_name}</span>

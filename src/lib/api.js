@@ -675,25 +675,11 @@ export async function getSeasonRostersForReporting(seasonId, leagueArg) {
 
 // Upload a completed match report.
 // Expects `payload` to be a plain JS object that matches your backend schema.
-export async function uploadMatchReport(seasonId, payload, leagueArg) {
-  const bits = normalizeLeagueBits(leagueArg);
-
-  const res = await apiFetch(
-    withLeagueExplicit(`/seasons/${seasonId}/matches/reporting`, bits),
-    {
-      method: "POST",
-      body: JSON.stringify(payload ?? {}),
-    }
-  );
-
-  const out = await handle(res);
-
-  // Bust anything that might be stale after reporting
-  clearApiCache(`season-matches-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`);
-  clearApiCache(`season-dashboard:${leagueKeyFromBits(bits)}:${seasonId}`);
-  clearApiCache("pokemon-career-stats");
-
-  return out;
+export async function uploadMatchReport(matchId, payload) {
+  return apiFetch(`/matches/${matchId}/report`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
 }
 
 

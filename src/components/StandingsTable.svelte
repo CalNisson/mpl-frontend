@@ -4,9 +4,15 @@
   export let matchGames = [];   // individual game results
 
   // 1) Filter teams that have a placement (only show finalized standings)
-  $: filteredTeams = teams.filter(
-    (t) => t.placement !== null && t.placement !== undefined
-  );
+  $: filteredTeams = teams;
+
+  // ✅ Show/hide Conf/Div columns if season uses them
+  function hasNonEmpty(v) {
+    return v !== null && v !== undefined && String(v).trim() !== "";
+  }
+
+  $: showConference = (teams ?? []).some((t) => hasNonEmpty(t.conference));
+  $: showDivision   = (teams ?? []).some((t) => hasNonEmpty(t.division));
 
   // 2) Build a Set of *postseason* match_ids (playoffs + playins) to EXCLUDE from diff/kills calc
   $: excludedMatchIds = new Set(
@@ -165,22 +171,22 @@
           <th>#</th>
           <th>Team</th>
           <th>Coach</th>
-          <th>Conf</th>
-          <th>Div</th>
+          {#if showConference}<th>Conf</th>{/if}
+          {#if showDivision}<th>Div</th>{/if}
           <th>W</th>
           <th>L</th>
           <th>Differential</th>
         </tr>
       </thead>
+
       <tbody>
         {#each sortedTeams as t, i}
           <tr>
-            <!-- rank based on sorted order -->
             <td>{i + 1}</td>
             <td>{t.team_name}</td>
             <td>{t.coach_name}</td>
-            <td>{t.conference}</td>
-            <td>{t.division}</td>
+            {#if showConference}<td>{t.conference}</td>{/if}
+            {#if showDivision}<td>{t.division}</td>{/if}
             <td style="text-align: center;">{t.season_wins}</td>
             <td style="text-align: center;">{t.season_losses}</td>
             <td style="text-align: center;">{differentialMap[t.id]}</td>

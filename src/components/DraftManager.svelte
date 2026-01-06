@@ -56,6 +56,26 @@
   // -----------------------------
   let mockPickEnabled = false;
 
+  // -----------------------------
+  // NEW: can't-afford modal
+  // -----------------------------
+  let cantAffordOpen = false;
+  let cantAffordTitle = "Player can't afford this pick";
+  let cantAffordBody = "";
+  let cantAffordPauseError = "";
+
+  function openCantAffordModal({ coachName, pokemonName, cost, remaining }) {
+    cantAffordTitle = "Player can't afford this pick";
+    cantAffordBody = `${coachName} can't afford this pick. ${pokemonName} costs ${cost} points, player only has ${remaining} points remaining.`;
+    cantAffordPauseError = "";
+    cantAffordOpen = true;
+  }
+
+  function closeCantAffordModal() {
+    cantAffordOpen = false;
+    cantAffordPauseError = "";
+  }
+
   function setFlash(text, isErr = false) {
     msg = isErr ? "" : text;
     error = isErr ? text : "";
@@ -435,27 +455,6 @@
     }
   }
 
-  async function doPick() {
-    try {
-      const teamId = snapshot?.state?.current_team_id;
-      if (!teamId) throw new Error("No current team.");
-      const pid = Number(selectedPokemonId);
-      if (!pid) throw new Error("Choose a Pokémon to draft.");
-
-      await makeDraftPick(seasonId, { team_id: teamId, pokemon_id: pid });
-
-      // one-pick-only: automatically disable after successful pick
-      if (mockPickEnabled) mockPickEnabled = false;
-
-      selectedPokemonId = null;
-      pokemonQuery = "";
-      await loadAll({ silent: true });
-      setFlash("Pick recorded.");
-    } catch (e) {
-      setFlash(e?.message ?? String(e), true);
-    }
-  }
-
   function fmtTime(sec) {
     const s = Math.max(0, sec ?? 0);
     const m = Math.floor(s / 60);
@@ -491,8 +490,7 @@
   // Only admins/league masters get mock button
   $: canMockPick = viewerIsAdmin || viewerIsLeagueMaster;
 
-  // Only show mock button while running (your original “is it only visible after start?” question)
-  // If you want it visible even before start, change this to: `canMockPick && !!currentTeam`
+  // Only show mock button while running
   $: showMockButton = canMockPick;
 
   $: isMyTurn =
@@ -512,21 +510,120 @@
     else setFlash("Mock Pick disabled.");
   }
 
+  // -----------------------------
+  // NEW: points helpers + affordability (used only for blocking the action)
+  // -----------------------------
+  $: currentBudget = currentTeam ? budgetByTeamId(currentTeam.team_id) : null;
+  $: remainingPoints = currentBudget?.remaining ?? null;
+
+  function pokemonById(pid) {
+    const id = Number(pid);
+    if (!id) return null;
+    return pool.find((x) => x.pokemon_id === id) ?? null;
+  }
+
   // selection should be blocked for non-drafters
   function selectPokemon(pid) {
     if (!pickEnabled) return;
     selectedPokemonId = pid;
+  }
+
+  async function doPick() {
+    try {
+      const teamId = snapshot?.state?.current_team_id;
+      if (!teamId) throw new Error("No current team.");
+
+      const pid = Number(selectedPokemonId);
+      if (!pid) throw new Error("Choose a Pokémon to draft.");
+
+      // NEW: prevent pick if points are insufficient (modal popup + pause)
+      const mon = pokemonById(pid);
+      const team = currentTeam;
+      const budget = currentBudget;
+
+      const cost = Number(mon?.points ?? 0);
+      const remaining = Number(budget?.remaining ?? 0);
+
+      // Only enforce if we actually have a budget + mon cost data
+      if (team && budget && mon && Number.isFinite(cost) && cost > remaining) {
+        openCantAffordModal({
+          coachName: team.coach_name ?? "Player",
+          pokemonName: mon.pokemon_name ?? "that Pokémon",
+          cost,
+          remaining,
+        });
+
+        // Pause the draft right away if possible
+        try {
+          await pauseDraft(seasonId);
+          mockPickEnabled = false;
+          await loadAll({ silent: true });
+        } catch (pauseErr) {
+          cantAffordPauseError = pauseErr?.message ?? String(pauseErr);
+          setFlash(
+            "Pick blocked (insufficient points). Could not pause draft (missing permissions?).",
+            true
+          );
+        }
+
+        return;
+      }
+
+      await makeDraftPick(seasonId, { team_id: teamId, pokemon_id: pid });
+
+      // one-pick-only: automatically disable after successful pick
+      if (mockPickEnabled) mockPickEnabled = false;
+
+      selectedPokemonId = null;
+      pokemonQuery = "";
+      await loadAll({ silent: true });
+      setFlash("Pick recorded.");
+    } catch (e) {
+      setFlash(e?.message ?? String(e), true);
+    }
   }
 </script>
 
 {#if loading}
   <div class="card muted">Loading draft…</div>
 {:else}
+  <!-- Toast popups -->
   {#if error}
-    <div class="card err">{error}</div>
+    <div class="toast toastErr">{error}</div>
   {/if}
   {#if msg}
-    <div class="card ok">{msg}</div>
+    <div class="toast toastOk">{msg}</div>
+  {/if}
+
+  {#if cantAffordOpen}
+    <div
+      class="modalOverlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={cantAffordTitle}
+      on:click|self|preventDefault|stopPropagation={closeCantAffordModal}
+    >
+      <div class="modalCard">
+        <div class="modalTitle">{cantAffordTitle}</div>
+        <div class="modalBody">{cantAffordBody}</div>
+
+        {#if cantAffordPauseError}
+          <div class="modalNote">
+            Could not pause the draft: {cantAffordPauseError}
+          </div>
+        {/if}
+
+        <div class="modalActions">
+          <button
+            class="btn"
+            type="button"
+            on:click|preventDefault|stopPropagation={closeCantAffordModal}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if !snapshot}
@@ -689,7 +786,7 @@
               </div>
             {/if}
 
-            <!-- NEW: Mock Pick toggle (admins + league masters only) -->
+            <!-- Mock Pick toggle (admins + league masters only) -->
             {#if showMockButton}
               <div class="mockRow">
                 <button
@@ -796,7 +893,8 @@
         <div class="pick">
           <div class="pickTop">
             <input class="search" placeholder="Search Pokémon…" bind:value={pokemonQuery} />
-            <button type="button"
+            <button
+              type="button"
               class="btn coral"
               on:click|preventDefault|stopPropagation={doPick}
               disabled={!pickEnabled || !selectedPokemonId || snapshot.state.status === "ended"}
@@ -814,7 +912,8 @@
               {@const isDrafted = !!pick}
               {@const selectable = pickEnabled && isDraftable(p) && !isDrafted}
 
-              <button type="button"
+              <button
+                type="button"
                 class="poke {selectedPokemonId === p.pokemon_id ? 'sel' : ''} {isDrafted ? 'drafted' : ''} {selectable ? '' : 'disabled'}"
                 on:click|preventDefault|stopPropagation={() => selectPokemon(p.pokemon_id)}
                 disabled={!selectable}
@@ -912,17 +1011,75 @@
     opacity: 0.75;
   }
 
-  .err {
-    border-color: rgba(255, 80, 80, 0.35);
-  }
-  .ok {
-    border-color: rgba(80, 255, 160, 0.35);
-  }
-
   .divider {
     margin: 0.85rem 0;
     height: 1px;
     background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* Toast popups */
+  .toast {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 9999;
+    max-width: min(560px, calc(100vw - 36px));
+    padding: 0.8rem 0.95rem;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(18, 18, 18, 0.92);
+    box-shadow: 0 20px 55px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(8px);
+  }
+  .toastErr {
+    border-color: rgba(255, 80, 80, 0.45);
+  }
+  .toastOk {
+    border-color: rgba(80, 255, 160, 0.45);
+  }
+
+  /* NEW: modal */
+  .modalOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.55);
+    display: grid;
+    place-items: center;
+    padding: 18px;
+  }
+  .modalCard {
+    width: min(560px, calc(100vw - 36px));
+    border-radius: 16px;
+    padding: 1rem 1rem 0.9rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(18, 18, 18, 0.96);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(10px);
+  }
+  .modalTitle {
+    font-weight: 900;
+    font-size: 1.05rem;
+    margin-bottom: 0.55rem;
+  }
+  .modalBody {
+    opacity: 0.92;
+    line-height: 1.35;
+  }
+  .modalNote {
+    margin-top: 0.65rem;
+    padding: 0.6rem 0.7rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 80, 80, 0.35);
+    background: rgba(255, 80, 80, 0.10);
+    opacity: 0.95;
+    font-size: 0.9rem;
+  }
+  .modalActions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
   }
 
   .btn {
@@ -1122,7 +1279,7 @@
     flex-wrap: wrap;
   }
 
-  /* NEW: mock button styling */
+  /* mock button styling */
   .mockRow {
     margin-top: 0.6rem;
     display: flex;

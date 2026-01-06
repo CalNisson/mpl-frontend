@@ -18,7 +18,8 @@
   let rosterRows = [];
 
   // replay analysis payload received from iframe
-  let analysis = null; // { replayUrl, analysis: json }
+  // { replayUrl, analysis: json }
+  let analysis = null;
 
   // match selection
   let selectedWeek = "";
@@ -52,11 +53,79 @@
     return String(s)
       .trim()
       .toLowerCase()
+      .replace(/['’]/g, "")
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
   }
 
+  // Mega-insensitive compare key:
+  // - strips leading "mega-" / "mega " and trailing "-mega"
+  function compareKey(name) {
+    let k = normName(name);
+    if (!k) return "";
+    k = k.replace(/^mega-/, "");
+    k = k.replace(/-mega$/, "");
+    return k;
+  }
+
+  const GENDER_FORMS = new Set(["meowstic", "indeedee", "basculegion", "oinkologne"]);
+
+  // Parses Showdown detail strings like:
+  // "Indeedee, F, shiny" or "Gallade-Mega, M" etc
+  function parseShowdownDetail(detail) {
+    const raw = String(detail ?? "").trim();
+    if (!raw) return { base: "", gender: null };
+
+    const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+    const base = parts[0] ?? "";
+
+    let gender = null;
+    for (const p of parts.slice(1)) {
+      if (p === "M" || p === "F") {
+        gender = p;
+        break;
+      }
+    }
+
+    return { base, gender };
+  }
+
+  // Display name rules:
+  // - always show base species only
+  // - only show gender for gender-specific forms: Name (Male/Female)
+  function displayNameFromDetail(detail) {
+    const { base, gender } = parseShowdownDetail(detail);
+    if (!base) return "";
+
+    const baseKey = normName(base);
+
+    if (GENDER_FORMS.has(baseKey) && (gender === "M" || gender === "F")) {
+      return `${base} (${gender === "M" ? "Male" : "Female"})`;
+    }
+    return base;
+  }
+
+  // Keys used to match analysis mons to roster mons
+  // - include gendered key and also non-gender key as fallback
+  // - include mega-stripped variants
+  function matchKeysFromDisplayName(displayName) {
+    const keys = new Set();
+    if (!displayName) return [];
+
+    keys.add(compareKey(displayName));
+
+    // If we have "Name (Male)" add also "Name" as fallback (mega stripping handled in compareKey)
+    const m = String(displayName).match(/^(.*)\s+\((Male|Female)\)\s*$/);
+    if (m) {
+      keys.add(compareKey(m[1].trim()));
+    }
+
+    return Array.from(keys).filter(Boolean);
+  }
+
   function analysisPlayers() {
+    // MatchReporting expects analysis.analysis.stats to be the array/object of players.
+    // With our onMessage fix, analysis.analysis is the analyzer's json payload.
     const stats = analysis?.analysis?.stats;
     if (!stats) return [];
 
@@ -99,30 +168,54 @@
           coach_name: r.coach_name ?? null,
           pokemon: [],
           pokemonSet: new Set(),
+          keyToPokemon: new Map(),
         };
       }
-      byTeam[r.team_id].pokemon.push({ pokemon_id: r.pokemon_id, pokemon_name: r.pokemon_name });
-      byTeam[r.team_id].pokemonSet.add(normName(r.pokemon_name));
+
+      const entry = { pokemon_id: r.pokemon_id, pokemon_name: r.pokemon_name };
+      byTeam[r.team_id].pokemon.push(entry);
+
+      // Add multiple keys for matching:
+      // - normal compareKey
+      // - mega stripped (compareKey handles)
+      // - if roster uses gendered display "Name (Male/Female)", also store base as fallback
+      const keys = matchKeysFromDisplayName(r.pokemon_name);
+      for (const k of keys) {
+        byTeam[r.team_id].pokemonSet.add(k);
+        if (!byTeam[r.team_id].keyToPokemon.has(k)) {
+          byTeam[r.team_id].keyToPokemon.set(k, entry);
+        }
+      }
     }
     return Object.values(byTeam);
   }
 
   function buildPokemonStatsFromAnalysis(player, team_id, rosterTeam) {
-    const team = player?.team;
-    const formes = team?.formes ?? [];
-
+    const team = player?.team ?? [];
     const stats = [];
-    for (const f of formes) {
-      if (!f?.brought) continue;
-      const pokemon_name = f?.name ?? f?.id ?? "";
-      const pokemon_key = normName(pokemon_name);
 
-      // map to pokemon_id using roster (best effort: exact normalized match)
-      const rosterMon = rosterTeam?.pokemon?.find((p) => normName(p.pokemon_name) === pokemon_key);
+    for (const mon of team) {
+      if (!mon?.brought) continue;
+
+      // Showdown detail exists on formes[0].detail usually
+      const detail = mon?.formes?.[0]?.detail ?? "";
+      const display = displayNameFromDetail(detail);
+      const keys = matchKeysFromDisplayName(display);
+
+      // find pokemon_id using roster keys (best effort)
+      let rosterMon = null;
+      for (const k of keys) {
+        const hit = rosterTeam?.keyToPokemon?.get(k) ?? null;
+        if (hit) {
+          rosterMon = hit;
+          break;
+        }
+      }
       if (!rosterMon) continue;
 
-      const k = Array.isArray(f.kills) ? f.kills.reduce((a, b) => a + (b ?? 0), 0) : 0;
-      const d = f.fainted ? 1 : 0;
+      const k = Array.isArray(mon.kills) ? mon.kills.reduce((a, b) => a + (b ?? 0), 0) : 0;
+      const d = mon.fainted ? 1 : 0;
+
       stats.push({
         team_id,
         pokemon_id: rosterMon.pokemon_id,
@@ -131,6 +224,7 @@
         deaths: d,
       });
     }
+
     return stats;
   }
 
@@ -158,26 +252,35 @@
     const rosterGrouped = groupRoster(rosterForWeek(wk));
 
     function usedMons(p) {
-      const formes = p?.team?.formes ?? [];
-      return formes
-        .filter((f) => f?.brought)
-        .map((f) => normName(f?.name ?? f?.id ?? ""))
+      const team = p?.team ?? [];
+      return team
+        .filter((mon) => mon?.brought)
+        .map((mon) => {
+          const detail = mon?.formes?.[0]?.detail ?? "";
+          const display = displayNameFromDetail(detail);
+          return matchKeysFromDisplayName(display);
+        })
+        .flat()
         .filter(Boolean);
     }
 
     function bestRosterForPlayer(p) {
       const used = new Set(usedMons(p));
       let best = null;
+
       for (const rt of rosterGrouped) {
         let overlap = 0;
         let missing = [];
+
         for (const u of used) {
           if (rt.pokemonSet.has(u)) overlap += 1;
           else missing.push(u);
         }
+
         const score = overlap * 1000 - missing.length; // strong preference for overlap
         if (!best || score > best.score) best = { rt, overlap, missing, score, used: Array.from(used) };
       }
+
       return best;
     }
 
@@ -188,7 +291,6 @@
 
     // Ensure different teams if possible
     if (b2 && b1 && b2.rt.team_id === b1.rt.team_id) {
-      // pick next best for p2
       const used2 = new Set(usedMons(p2));
       const candidates = rosterGrouped
         .filter((rt) => rt.team_id !== b1.rt.team_id)
@@ -203,6 +305,7 @@
           return { rt, overlap, missing, score, used: Array.from(used2) };
         })
         .sort((a, b) => b.score - a.score);
+
       if (candidates.length) b2 = candidates[0];
     }
 
@@ -236,6 +339,7 @@
     let team1_score = null;
     let team2_score = null;
     let winner_team_id = null;
+
     if (p1Win !== p2Win) {
       team1_score = p1Win ? 1 : 0;
       team2_score = p2Win ? 1 : 0;
@@ -251,9 +355,8 @@
     let finalTeam1 = m.team1_id;
     let finalTeam2 = m.team2_id;
     let finalWinner = null;
-    if (winner_team_id) {
-      finalWinner = winner_team_id;
-    }
+    if (winner_team_id) finalWinner = winner_team_id;
+
     if (!aligns && alignsSwapped) {
       // If our mapping is swapped relative to the match record, flip the score assignment too
       if (team1_score != null && team2_score != null) {
@@ -323,7 +426,13 @@
   function onMessage(ev) {
     const data = ev?.data;
     if (!data || data.type !== "mpl_replay_analysis") return;
-    analysis = { replayUrl: data.replayUrl ?? "", analysis: data.analysis ?? null };
+
+    // The iframe posts { analysis: { json, logText } }.
+    // Normalize it so MatchReporting always uses analysis.analysis = json.
+    const json = data.analysis?.json ?? data.analysis ?? null;
+
+    analysis = { replayUrl: data.replayUrl ?? "", analysis: json };
+
     // reset downstream selection
     selectedWeek = "";
     selectedMatchId = "";
@@ -355,6 +464,7 @@
           team1_score: Number(ovTeam1Score),
           team2_score: Number(ovTeam2Score),
           winner_id: Number(ovWinnerId),
+          is_double_loss: false,
           pokemon_stats: (ovPokemonStats ?? []).map((x) => ({
             team_id: Number(x.team_id),
             pokemon_id: Number(x.pokemon_id),
@@ -367,6 +477,7 @@
           team1_score: mapping?.suggested?.team1_score,
           team2_score: mapping?.suggested?.team2_score,
           winner_id: mapping?.suggested?.winner_id,
+          is_double_loss: false,
           pokemon_stats: mapping?.suggested?.pokemon_stats?.map((x) => ({
             team_id: x.team_id,
             pokemon_id: x.pokemon_id,
@@ -383,10 +494,6 @@
     } catch (e) {
       setErr(e);
     }
-  }
-
-  function diffText(k, d) {
-    return `${k - d}`;
   }
 
   function summarizeTeam(team_id) {
@@ -517,12 +624,12 @@
 
                 <div class="stats-row">
                   {#each [mapping.p1.team?.team_id, mapping.p2.team?.team_id].filter(Boolean) as tid (tid)}
+                    {@const s = summarizeTeam(tid)}
                     <div class="stat-card">
                       <div class="muted">Team {tid}</div>
-
-                      <div>Wins: {summarizeTeam(tid).wins}</div>
-                      <div>Losses: {summarizeTeam(tid).losses}</div>
-                      <div>Diff: {summarizeTeam(tid).diff}</div>
+                      <div>Kills: {s.kills}</div>
+                      <div>Deaths: {s.deaths}</div>
+                      <div>Diff: {s.diff}</div>
                     </div>
                   {/each}
                 </div>
