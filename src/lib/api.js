@@ -187,63 +187,87 @@ export async function getSeasonDashboard(seasonId, leagueArg) {
 // Schedule (regular season)
 // ----------------------------
 
-export async function getSeasonSchedule(seasonId) {
-  const key = `season-schedule:${seasonId}`;
+export async function getSeasonSchedule(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`;
+
   return cached(key, async () => {
-    const res = await apiFetch(`/seasons/${seasonId}/schedule`, { method: "GET" });
+    const res = await apiFetch(
+      withLeagueExplicit(`/seasons/${seasonId}/schedule`, bits),
+      { method: "GET" }
+    );
     return handle(res);
   });
 }
 
-export async function generateSeasonSchedule(seasonId, { weeks, overwrite = true }) {
-  const res = await apiFetch(`/seasons/${seasonId}/schedule/generate`, {
-    method: "POST",
-    body: JSON.stringify({ weeks, overwrite }),
-  });
+export async function generateSeasonSchedule(seasonId, { weeks, overwrite = true }, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/schedule/generate`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify({ weeks, overwrite }),
+    }
+  );
+
   const out = await handle(res);
 
   // bust schedule cache so UI updates immediately
-  clearApiCache(`season-schedule:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
 
   return out;
 }
 
-export async function createSeasonScheduleMatch(seasonId, { week, team1_id, team2_id }) {
-  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches`, {
-    method: "POST",
-    body: JSON.stringify({ week, team1_id, team2_id }),
-  });
+export async function createSeasonScheduleMatch(seasonId, { week, team1_id, team2_id }, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/schedule/matches`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify({ week, team1_id, team2_id }),
+    }
+  );
+
   const out = await handle(res);
 
-  // bust schedule cache so UI updates immediately
-  clearApiCache(`season-schedule:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
 
   return out;
 }
 
-export async function deleteSeasonScheduleMatch(seasonId, matchId) {
-  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
-    method: "DELETE",
-  });
+export async function deleteSeasonScheduleMatch(seasonId, matchId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/schedule/matches/${matchId}`, bits),
+    { method: "DELETE" }
+  );
+
   const out = await handle(res);
 
-  // bust schedule cache so UI updates immediately
-  clearApiCache(`season-schedule:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
 
   return out;
 }
 
 // Patch (edit) a scheduled regular-season match
 // body can include: { week?: number, team1_id?: number, team2_id?: number, replay?: string | null }
-export async function patchSeasonScheduleMatch(seasonId, matchId, body) {
-  const res = await apiFetch(`/seasons/${seasonId}/schedule/matches/${matchId}`, {
-    method: "PATCH",
-    body: JSON.stringify(body ?? {}),
-  });
+export async function patchSeasonScheduleMatch(seasonId, matchId, body, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/schedule/matches/${matchId}`, bits),
+    {
+      method: "PATCH",
+      body: JSON.stringify(body ?? {}),
+    }
+  );
+
   const out = await handle(res);
 
-  // bust schedule cache so UI updates immediately
-  clearApiCache(`season-schedule:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
 
   return out;
 }
@@ -752,4 +776,28 @@ export async function createFreeAgencyTransaction(seasonId, body, leagueArg) {
   clearApiCache("season-dashboard:");
 
   return out;
+}
+
+// Fetch all games for a match
+export async function getMatchGames(matchId) {
+  const res = await apiFetch(`/matches/${matchId}/games`, { method: "GET" });
+  return handle(res); // expect array of match_games rows
+}
+
+// Upsert one game for a match (by game_number)
+export async function upsertMatchGame(matchId, gameNumber, payload) {
+  const res = await apiFetch(`/matches/${matchId}/games/${gameNumber}`, {
+    method: "PUT",
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handle(res);
+}
+
+// Patch match summary (series score + winner)
+export async function patchMatchSummary(matchId, payload) {
+  const res = await apiFetch(`/matches/${matchId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handle(res);
 }

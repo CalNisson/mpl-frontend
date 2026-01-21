@@ -39,6 +39,7 @@
     error = "";
     try {
       leagues = await getOrganizationLeagues(orgSlug);
+      leagues = [...leagues].sort((a, b) => a.id - b.id);
     } catch (e) {
       error = e?.message || String(e);
       leagues = [];
@@ -83,6 +84,13 @@
 
   {#if !token}
     <div class="muted">Log in to select an organization and league.</div>
+  {:else if !loadingOrgs && orgs.length === 0}
+    <div class="empty">
+      <div class="empty-title">You are not currently part of any Organizations/Leagues.</div>
+      <div class="muted">
+        Please reach out to your League Master to get added.
+      </div>
+    </div>
   {:else}
     <div class="row">
       <div class="field">
@@ -96,6 +104,7 @@
       </div>
 
       <div class="field">
+        <label>League</label>
         <select
             class="select"
             bind:value={selectedLeagueSlug}
@@ -158,6 +167,16 @@
     cursor: not-allowed;
   }
   .muted { opacity: .75; }
+  .empty {
+    padding: .75rem;
+    border-radius: 14px;
+    border: 1px dashed rgba(255,255,255,.18);
+    background: rgba(255,255,255,.03);
+  }
+  .empty-title {
+    font-weight: 800;
+    margin-bottom: .25rem;
+  }
   .error {
     margin-top: .6rem;
     color: #fecaca;

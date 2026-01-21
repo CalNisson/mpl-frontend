@@ -11,7 +11,6 @@
 
   export let seasonId;
   export let teams = []; // [{ id, team_name, color_primary, ... }]
-  // IMPORTANT: parent should only pass canEdit=true for admins/league masters
   export let canEdit = false;
 
   let editMode = false;
@@ -225,8 +224,8 @@
 
   function winnerLabel(m) {
     if (!m.winner_id) return "—";
-    if (m.winner_id === m.team1_id) return `${m.team1_name} wins`;
-    if (m.winner_id === m.team2_id) return `${m.team2_name} wins`;
+    if (m.winner_id === m.team1_id) return `${m.team1_name}`;
+    if (m.winner_id === m.team2_id) return `${m.team2_name}`;
     return "—";
   }
 </script>
@@ -554,7 +553,16 @@
   }
 
   .replay-link {
-    font-weight: 800;
-    text-decoration: underline;
+    color: rgba(255, 170, 170, 0.95); /* soft coral */
+    font-weight: 700;
+    text-decoration: none;
+    transition: color 120ms ease, text-decoration-color 120ms ease;
   }
+
+  .replay-link:hover {
+    color: rgba(255, 200, 200, 1);
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 200, 200, 0.6);
+  }
+
 </style>

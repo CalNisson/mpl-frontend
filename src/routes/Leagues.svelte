@@ -20,6 +20,7 @@
   import SeasonTeamsManager from "../components/SeasonTeamsManager.svelte";
   import MatchReporting from "../components/MatchReporting.svelte";
   import PlayoffsPlanner from "../components/PlayoffsPlanner.svelte";
+  import SeasonSchedule from "../components/SeasonSchedule.svelte";
   import { clearApiCache } from "../lib/api.js";
 
   $: ctx = $leagueContext;
@@ -94,6 +95,9 @@
     try {
       clearApiCache("seasons:");
       seasons = await getSeasons();
+
+      // ✅ let reactive `$: activeSeason = ...` recompute before we read it
+      await tick();
     } catch (e) {
       seasons = [];
       dashboard = null;
@@ -117,8 +121,9 @@
     }
   }
 
+
   // ---- Tabs ----
-  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Transactions", "Playoffs"].concat(
+  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Schedule", "Transactions", "Playoffs"].concat(
     isLeagueMaster ? ["Match Reporting"] : []
   );
   let tab = "Overview";
@@ -1025,14 +1030,6 @@
                   <span class="muted">Format:</span>
                   <span>{season?.format ?? "—"}</span>
                 </div>
-
-                {#if isLeagueMaster}
-                  <div class="divider"></div>
-                  <div class="muted">
-                    Editing UI comes next: once your PATCH /seasons/:season_id is stable,
-                    we’ll add “Edit Season” (name/dates/format/champion/mvp).
-                  </div>
-                {/if}
               </div>
             </div>
           </div>
@@ -1041,6 +1038,19 @@
           <div class="leaderboard-panels" style="margin-top:.75rem;">
             <StandingsTable {teams} {matches} {matchGames} />
             <PokemonLeaderboard stats={pokemonStats} />
+          </div>
+
+        {:else if tab === "Schedule"}
+          <div style="margin-top:.75rem;">
+            {#if !activeSeason?.id}
+              <div class="card muted">No active season selected.</div>
+            {:else}
+              <SeasonSchedule
+                seasonId={activeSeason.id}
+                teams={teamsMerged}
+                canEdit={isLeagueMaster}
+              />
+            {/if}
           </div>
 
         {:else if tab === "Teams"}

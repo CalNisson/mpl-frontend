@@ -4,12 +4,15 @@
     getSeasonMatchesForReporting,
     getSeasonRostersForReporting,
     uploadMatchReport,
+    getMatchGames,
+    upsertMatchGame,
+    patchMatchSummary,
   } from "../lib/api.js";
+  import ReplayAnalyzer from "../components/ReplayAnalyzer.svelte";
 
   export let seasonId;
-  export let canEdit = false; // league master/admin gate (parent should enforce)
+  export let canEdit = false;
 
-  // Analyzer iframe (served from /public)
   const ANALYZER_PATH = `${import.meta.env.BASE_URL}replay_analyzer.html`;
 
   let loading = true;
@@ -17,18 +20,13 @@
   let matches = [];
   let rosterRows = [];
 
-  // replay analysis payload received from iframe
-  // { replayUrl, analysis: json }
   let analysis = null;
 
-  // match selection
   let selectedWeek = "";
   let selectedMatchId = "";
 
-  // computed mapping + validation
-  let mapping = null; // { p1: {...}, p2: {...}, mismatches: [...] }
+  let mapping = null;
 
-  // preview + override
   let readyToUpload = false;
   let showOverride = false;
 
@@ -40,10 +38,17 @@
   let ovWinnerId = "";
   let ovReplay = "";
 
-  // pokemon stat overrides (optional, only used if showOverride)
-  let ovPokemonStats = []; // [{ team_id, pokemon_id, pokemon_name, kills, deaths }]
+  // diff calculation mode
+  let ovDiffMode = "score";
 
-  // ---------- helpers ----------
+  // pokemon stat overrides
+  let ovPokemonStats = [];
+
+  // NEW: set handling
+  let ovIsMultiSet = false;
+  let ovBestOf = 3;     // 3 or 5
+  let ovGameNumber = 1; // integer 1..bestOf
+
   function setErr(e) {
     error = e?.message ?? String(e);
   }
@@ -58,20 +63,49 @@
       .replace(/^-+|-+$/g, "");
   }
 
-  // Mega-insensitive compare key:
-  // - strips leading "mega-" / "mega " and trailing "-mega"
-  function compareKey(name) {
+  const CANONICAL_FORMS = new Map([
+    ["maushold-three", "maushold"],
+    ["maushold-four", "maushold"],
+  ]);
+
+  function canonicalKeyFromName(name) {
     let k = normName(name);
     if (!k) return "";
+
+    const hadMega =
+      k.startsWith("mega-") || k.endsWith("-mega") || k.includes("-mega-");
+
     k = k.replace(/^mega-/, "");
-    k = k.replace(/-mega$/, "");
+    k = k.replace(/-mega(-[a-z0-9]+)?$/, "");
+    k = k.replace(/-mega-/g, "-");
+
+    if (hadMega) {
+      k = k.replace(/-(x|y)$/, "");
+    }
+
+    // Your existing canonicals (keep)
+    const canonical = CANONICAL_FORMS.get(k);
+    if (canonical) k = canonical;
+
     return k;
+  }
+
+
+  function canonicalizeNameIfNeeded(rawName) {
+    const raw = String(rawName ?? "").trim();
+    if (!raw) return "";
+
+    const k = canonicalKeyFromName(raw);
+    if (k === "maushold") return "Maushold";
+    return raw;
+  }
+
+  function compareKey(name) {
+    return canonicalKeyFromName(name);
   }
 
   const GENDER_FORMS = new Set(["meowstic", "indeedee", "basculegion", "oinkologne"]);
 
-  // Parses Showdown detail strings like:
-  // "Indeedee, F, shiny" or "Gallade-Mega, M" etc
   function parseShowdownDetail(detail) {
     const raw = String(detail ?? "").trim();
     if (!raw) return { base: "", gender: null };
@@ -86,50 +120,37 @@
         break;
       }
     }
-
     return { base, gender };
   }
 
-  // Display name rules:
-  // - always show base species only
-  // - only show gender for gender-specific forms: Name (Male/Female)
   function displayNameFromDetail(detail) {
     const { base, gender } = parseShowdownDetail(detail);
     if (!base) return "";
 
-    const baseKey = normName(base);
+    const canonBase = canonicalizeNameIfNeeded(base);
+    const baseKey = normName(canonBase);
 
     if (GENDER_FORMS.has(baseKey) && (gender === "M" || gender === "F")) {
-      return `${base} (${gender === "M" ? "Male" : "Female"})`;
+      return `${canonBase} (${gender === "M" ? "Male" : "Female"})`;
     }
-    return base;
+    return canonBase;
   }
 
-  // Keys used to match analysis mons to roster mons
-  // - include gendered key and also non-gender key as fallback
-  // - include mega-stripped variants
   function matchKeysFromDisplayName(displayName) {
     const keys = new Set();
     if (!displayName) return [];
 
     keys.add(compareKey(displayName));
 
-    // If we have "Name (Male)" add also "Name" as fallback (mega stripping handled in compareKey)
     const m = String(displayName).match(/^(.*)\s+\((Male|Female)\)\s*$/);
-    if (m) {
-      keys.add(compareKey(m[1].trim()));
-    }
+    if (m) keys.add(compareKey(m[1].trim()));
 
     return Array.from(keys).filter(Boolean);
   }
 
   function analysisPlayers() {
-    // MatchReporting expects analysis.analysis.stats to be the array/object of players.
-    // With our onMessage fix, analysis.analysis is the analyzer's json payload.
     const stats = analysis?.analysis?.stats;
     if (!stats) return [];
-
-    // Supports both {P1:{...},P2:{...}} and array forms
     if (Array.isArray(stats)) return stats;
     return Object.entries(stats).map(([key, v]) => ({ key, ...v }));
   }
@@ -147,13 +168,10 @@
 
   function rosterForWeek(week) {
     const w = Number(week);
-    // include pokemon if acquired_week is null/0 or <= week, and not dropped or dropped > week
     return rosterRows.filter((r) => {
       const a = r.acquisition_week ?? 0;
       const d = r.dropped_week ?? null;
-      const okAcquire = a === 0 || a <= w;
-      const okDrop = d == null || d > w;
-      return okAcquire && okDrop;
+      return (a === 0 || a <= w) && (d == null || d > w);
     });
   }
 
@@ -172,14 +190,11 @@
         };
       }
 
-      const entry = { pokemon_id: r.pokemon_id, pokemon_name: r.pokemon_name };
+      const dbName = canonicalizeNameIfNeeded(r.pokemon_name);
+      const entry = { pokemon_id: r.pokemon_id, pokemon_name: dbName };
       byTeam[r.team_id].pokemon.push(entry);
 
-      // Add multiple keys for matching:
-      // - normal compareKey
-      // - mega stripped (compareKey handles)
-      // - if roster uses gendered display "Name (Male/Female)", also store base as fallback
-      const keys = matchKeysFromDisplayName(r.pokemon_name);
+      const keys = matchKeysFromDisplayName(dbName);
       for (const k of keys) {
         byTeam[r.team_id].pokemonSet.add(k);
         if (!byTeam[r.team_id].keyToPokemon.has(k)) {
@@ -197,12 +212,10 @@
     for (const mon of team) {
       if (!mon?.brought) continue;
 
-      // Showdown detail exists on formes[0].detail usually
       const detail = mon?.formes?.[0]?.detail ?? "";
       const display = displayNameFromDetail(detail);
       const keys = matchKeysFromDisplayName(display);
 
-      // find pokemon_id using roster keys (best effort)
       let rosterMon = null;
       for (const k of keys) {
         const hit = rosterTeam?.keyToPokemon?.get(k) ?? null;
@@ -226,6 +239,35 @@
     }
 
     return stats;
+  }
+
+  // ----------------------------
+  // NEW: derive "game score" from replay
+  // Score = remaining mons = 6 - deaths (clamped)
+  // ----------------------------
+  function clampInt(n, a, b) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return a;
+    return Math.max(a, Math.min(b, Math.trunc(n)));
+  }
+
+  function playerDeaths(p) {
+    // analyzer JSON usually has total.deaths
+    const d = p?.total?.deaths ?? p?.total?.Deaths ?? null;
+    return Number.isFinite(Number(d)) ? Number(d) : 0;
+  }
+
+  function gameScoreFromPlayer(p) {
+    // Default to 6; if you later want variable teamsize, wire it here.
+    const deaths = clampInt(playerDeaths(p), 0, 6);
+    return clampInt(6 - deaths, 0, 6);
+  }
+
+  function computeGameScores(p1, p2) {
+    // p1/p2 here are replay players (not match team1/team2)
+    const s1 = gameScoreFromPlayer(p1);
+    const s2 = gameScoreFromPlayer(p2);
+    return { s1, s2 };
   }
 
   function computeMapping() {
@@ -277,19 +319,18 @@
           else missing.push(u);
         }
 
-        const score = overlap * 1000 - missing.length; // strong preference for overlap
+        const score = overlap * 1000 - missing.length;
         if (!best || score > best.score) best = { rt, overlap, missing, score, used: Array.from(used) };
       }
-
       return best;
     }
 
     const p1 = players[0];
     const p2 = players[1];
+
     const b1 = bestRosterForPlayer(p1);
     let b2 = bestRosterForPlayer(p2);
 
-    // Ensure different teams if possible
     if (b2 && b1 && b2.rt.team_id === b1.rt.team_id) {
       const used2 = new Set(usedMons(p2));
       const candidates = rosterGrouped
@@ -313,58 +354,50 @@
     if (!b1 || !b2) {
       mismatches.push({ kind: "mapping", message: "Could not map both replay players to teams." });
     } else {
-      if (b1.missing.length) {
-        mismatches.push({
-          kind: "roster",
-          team_id: b1.rt.team_id,
-          team_name: b1.rt.team_name,
-          player: p1.username,
-          missing: b1.missing,
-        });
-      }
-      if (b2.missing.length) {
-        mismatches.push({
-          kind: "roster",
-          team_id: b2.rt.team_id,
-          team_name: b2.rt.team_name,
-          player: p2.username,
-          missing: b2.missing,
-        });
-      }
+      if (b1.missing.length) mismatches.push({ kind: "roster", team_id: b1.rt.team_id, team_name: b1.rt.team_name, player: p1.username, missing: b1.missing });
+      if (b2.missing.length) mismatches.push({ kind: "roster", team_id: b2.rt.team_id, team_name: b2.rt.team_name, player: p2.username, missing: b2.missing });
     }
 
-    // Determine score + winner from analysis
+    // Determine winner from analysis
     const p1Win = !!p1.win;
     const p2Win = !!p2.win;
+
+    // Game score from deaths (remaining mons)
+    const { s1: p1GameScore, s2: p2GameScore } = computeGameScores(p1, p2);
+
+    // We'll assign the game score to match.team1/team2 based on alignment/swap
     let team1_score = null;
     let team2_score = null;
     let winner_team_id = null;
 
     if (p1Win !== p2Win) {
-      team1_score = p1Win ? 1 : 0;
-      team2_score = p2Win ? 1 : 0;
       winner_team_id = p1Win ? b1?.rt?.team_id : b2?.rt?.team_id;
     }
 
-    // Map replay players -> match teams (team1/team2) by ID if they line up, otherwise keep mapped IDs
     const mappedTeam1 = b1?.rt?.team_id;
     const mappedTeam2 = b2?.rt?.team_id;
+
     const aligns = mappedTeam1 === m.team1_id && mappedTeam2 === m.team2_id;
     const alignsSwapped = mappedTeam1 === m.team2_id && mappedTeam2 === m.team1_id;
 
+    // Assign scores relative to the match record
+    if (aligns) {
+      team1_score = p1GameScore;
+      team2_score = p2GameScore;
+    } else if (alignsSwapped) {
+      team1_score = p2GameScore;
+      team2_score = p1GameScore;
+    } else {
+      // Fallback: keep p1->team1 order (best effort)
+      team1_score = p1GameScore;
+      team2_score = p2GameScore;
+    }
+
     let finalTeam1 = m.team1_id;
     let finalTeam2 = m.team2_id;
+
     let finalWinner = null;
     if (winner_team_id) finalWinner = winner_team_id;
-
-    if (!aligns && alignsSwapped) {
-      // If our mapping is swapped relative to the match record, flip the score assignment too
-      if (team1_score != null && team2_score != null) {
-        const tmp = team1_score;
-        team1_score = team2_score;
-        team2_score = tmp;
-      }
-    }
 
     const pstats1 = buildPokemonStatsFromAnalysis(p1, mappedTeam1, b1?.rt);
     const pstats2 = buildPokemonStatsFromAnalysis(p2, mappedTeam2, b2?.rt);
@@ -386,16 +419,28 @@
       mismatches,
     };
 
-    readyToUpload = mismatches.length === 0 && team1_score != null && team2_score != null && finalWinner != null;
+    readyToUpload =
+      mismatches.length === 0 &&
+      team1_score != null &&
+      team2_score != null &&
+      // winner can be null for double-loss; but your current rules require it
+      finalWinner != null;
 
     // preload override defaults
     ovReplay = analysis.replayUrl ?? "";
     ovTeam1Id = String(finalTeam1 ?? "");
     ovTeam2Id = String(finalTeam2 ?? "");
-    ovTeam1Score = team1_score ?? 1;
+    ovTeam1Score = team1_score ?? 0;
     ovTeam2Score = team2_score ?? 0;
     ovWinnerId = String(finalWinner ?? "");
     ovPokemonStats = pokemon_stats.map((x) => ({ ...x }));
+
+    ovDiffMode = "score";
+
+    // reset set controls
+    ovIsMultiSet = false;
+    ovBestOf = 3;
+    ovGameNumber = 1;
   }
 
   async function load() {
@@ -427,13 +472,9 @@
     const data = ev?.data;
     if (!data || data.type !== "mpl_replay_analysis") return;
 
-    // The iframe posts { analysis: { json, logText } }.
-    // Normalize it so MatchReporting always uses analysis.analysis = json.
     const json = data.analysis?.json ?? data.analysis ?? null;
-
     analysis = { replayUrl: data.replayUrl ?? "", analysis: json };
 
-    // reset downstream selection
     selectedWeek = "";
     selectedMatchId = "";
     mapping = null;
@@ -454,42 +495,143 @@
     computeMapping();
   }
 
+  // ----------------------------
+  // NEW: Set validation + series recompute
+  // ----------------------------
+  function requiredWins(bestOf) {
+    const bo = Number(bestOf);
+    return bo === 5 ? 3 : 2; // only 3 or 5 supported
+  }
+
+  function validateSetInputs() {
+    if (!showOverride) return null; // only used for override submit path
+
+    if (!ovIsMultiSet) return null;
+
+    const bo = Number(ovBestOf);
+    if (bo !== 3 && bo !== 5) return "Best-of must be 3 or 5.";
+
+    const gn = Number(ovGameNumber);
+    if (!Number.isFinite(gn)) return "Game number must be a whole number.";
+    if (!Number.isInteger(gn)) return "Game number must be a whole number.";
+    if (gn < 1) return "Game number must be at least 1.";
+    if (gn > bo) return `Game number cannot be greater than best-of (${bo}).`;
+
+    return null;
+  }
+
+  function computeSeriesFromGames(games, team1_id, team2_id, bestOf) {
+    // games rows expected shape: { game_number, winner_id, ... }
+    let w1 = 0;
+    let w2 = 0;
+
+    for (const g of games ?? []) {
+      const wid = Number(g?.winner_id ?? 0);
+      if (!wid) continue;
+      if (wid === Number(team1_id)) w1 += 1;
+      else if (wid === Number(team2_id)) w2 += 1;
+    }
+
+    const need = requiredWins(bestOf);
+    let winner_id = null;
+    if (w1 >= need && w1 > w2) winner_id = Number(team1_id);
+    else if (w2 >= need && w2 > w1) winner_id = Number(team2_id);
+
+    return { team1_wins: w1, team2_wins: w2, winner_id };
+  }
+
   async function onUpload() {
     const matchId = Number(selectedMatchId);
     if (!matchId) return;
 
-    const payload = showOverride
-      ? {
-          replay: ovReplay?.trim() || null,
-          team1_score: Number(ovTeam1Score),
-          team2_score: Number(ovTeam2Score),
-          winner_id: Number(ovWinnerId),
-          is_double_loss: false,
-          pokemon_stats: (ovPokemonStats ?? []).map((x) => ({
-            team_id: Number(x.team_id),
-            pokemon_id: Number(x.pokemon_id),
-            kills: Number(x.kills),
-            deaths: Number(x.deaths),
-          })),
-        }
-      : {
-          replay: mapping?.replay_url?.trim() || null,
-          team1_score: mapping?.suggested?.team1_score,
-          team2_score: mapping?.suggested?.team2_score,
-          winner_id: mapping?.suggested?.winner_id,
-          is_double_loss: false,
-          pokemon_stats: mapping?.suggested?.pokemon_stats?.map((x) => ({
-            team_id: x.team_id,
-            pokemon_id: x.pokemon_id,
-            kills: x.kills,
-            deaths: x.deaths,
-          })),
-        };
-
     error = "";
+
+    // payload values
+    const replay = showOverride ? (ovReplay?.trim() || null) : (mapping?.replay_url?.trim() || null);
+    const team1_score = showOverride ? Number(ovTeam1Score) : Number(mapping?.suggested?.team1_score);
+    const team2_score = showOverride ? Number(ovTeam2Score) : Number(mapping?.suggested?.team2_score);
+    const winner_id = showOverride ? Number(ovWinnerId) : Number(mapping?.suggested?.winner_id);
+
+    const pokemon_stats = showOverride
+      ? (ovPokemonStats ?? []).map((x) => ({
+          team_id: Number(x.team_id),
+          pokemon_id: Number(x.pokemon_id),
+          kills: Number(x.kills),
+          deaths: Number(x.deaths),
+        }))
+      : (mapping?.suggested?.pokemon_stats ?? []).map((x) => ({
+          team_id: x.team_id,
+          pokemon_id: x.pokemon_id,
+          kills: x.kills,
+          deaths: x.deaths,
+        }));
+
     try {
-      await uploadMatchReport(matchId, payload);
-      // Refresh match list (so schedule reflects replay URL and score)
+      if (!showOverride) {
+        // Non-override path: always treat as single-game update to matches (game score)
+        await uploadMatchReport(matchId, {
+          replay,
+          team1_score,
+          team2_score,
+          winner_id,
+          is_double_loss: false,
+          pokemon_stats,
+        });
+        await load();
+        return;
+      }
+
+      // Override path:
+      const setErrMsg = validateSetInputs();
+      if (setErrMsg) {
+        error = setErrMsg;
+        return;
+      }
+
+      if (!ovIsMultiSet) {
+        // Single-game override: patch match directly with GAME score
+        await uploadMatchReport(matchId, {
+          replay,
+          team1_score,
+          team2_score,
+          winner_id,
+          is_double_loss: false,
+          pokemon_stats,
+        });
+        await load();
+        return;
+      }
+
+      // Multi-game set:
+      const bo = Number(ovBestOf);
+      const gn = Number(ovGameNumber);
+
+      // 1) upsert this game into match_games
+      await upsertMatchGame(matchId, gn, {
+        replay,
+        team1_score,
+        team2_score,
+        winner_id,
+        pokemon_stats,
+      });
+
+      // 2) refetch all games and recompute series wins
+      const games = await getMatchGames(matchId);
+
+      const team1_id = Number(ovTeam1Id) || Number(mapping?.suggested?.team1_id) || Number(mapping?.match?.team1_id);
+      const team2_id = Number(ovTeam2Id) || Number(mapping?.suggested?.team2_id) || Number(mapping?.match?.team2_id);
+
+      const { team1_wins, team2_wins, winner_id: seriesWinner } =
+        computeSeriesFromGames(games, team1_id, team2_id, bo);
+
+      // 3) patch match summary to reflect series score
+      await patchMatchSummary(matchId, {
+        team1_score: team1_wins,
+        team2_score: team2_wins,
+        winner_id: seriesWinner, // null if not decided
+        best_of: bo,             // optional if you store it; harmless if ignored
+      });
+
       await load();
     } catch (e) {
       setErr(e);
@@ -497,10 +639,32 @@
   }
 
   function summarizeTeam(team_id) {
-    const stats = (mapping?.suggested?.pokemon_stats ?? []).filter((s) => s.team_id === team_id);
-    const kills = stats.reduce((a, s) => a + (s.kills ?? 0), 0);
-    const deaths = stats.reduce((a, s) => a + (s.deaths ?? 0), 0);
-    return { kills, deaths, diff: kills - deaths };
+    const useOverride = !!showOverride;
+
+    const team1_id = useOverride ? Number(ovTeam1Id) : Number(mapping?.suggested?.team1_id);
+    const team2_id = useOverride ? Number(ovTeam2Id) : Number(mapping?.suggested?.team2_id);
+
+    const team1_score = useOverride ? Number(ovTeam1Score) : Number(mapping?.suggested?.team1_score ?? 0);
+    const team2_score = useOverride ? Number(ovTeam2Score) : Number(mapping?.suggested?.team2_score ?? 0);
+
+    const statsSource = useOverride ? (ovPokemonStats ?? []) : (mapping?.suggested?.pokemon_stats ?? []);
+    const stats = statsSource.filter((s) => Number(s.team_id) === Number(team_id));
+
+    const kills = stats.reduce((a, s) => a + (Number(s.kills) || 0), 0);
+    const deaths = stats.reduce((a, s) => a + (Number(s.deaths) || 0), 0);
+
+    const mode = useOverride ? ovDiffMode : "score";
+
+    let diff = 0;
+    if (mode === "kills") {
+      diff = kills - deaths;
+    } else {
+      if (Number(team_id) === team1_id) diff = team1_score - team2_score;
+      else if (Number(team_id) === team2_id) diff = team2_score - team1_score;
+      else diff = 0;
+    }
+
+    return { kills, deaths, diff };
   }
 </script>
 
@@ -510,10 +674,20 @@
   <div class="grid">
     <div class="card">
       <div class="card-title">Replay Analyzer</div>
-      <div class="muted" style="margin:.25rem 0 .5rem;">
-        Paste the replay URL into the analyzer and click Analyze. When it finishes, the results will populate on the right.
-      </div>
-      <iframe class="analyzer" title="Replay Analyzer" src={ANALYZER_PATH} />
+      <ReplayAnalyzer
+        on:analyzed={(ev) => {
+          const replayUrl = ev.detail?.replayUrl ?? "";
+          const json = ev.detail?.analysis ?? ev.detail?.json ?? null;
+
+          analysis = { replayUrl, analysis: json };
+
+          selectedWeek = "";
+          selectedMatchId = "";
+          mapping = null;
+          readyToUpload = false;
+          showOverride = false;
+        }}
+      />
     </div>
 
     <div class="card">
@@ -600,7 +774,7 @@
               <div class="divider"></div>
 
               <div class="preview">
-                <div class="preview-title">Preview</div>
+                <div class="preview-title">Preview (single-game score)</div>
                 <div class="preview-line">
                   <b>{mapping.match.team1_name}</b>
                   <span class="muted">vs</span>
@@ -655,13 +829,36 @@
                     <input class="select" type="text" bind:value={ovReplay} />
                   </label>
 
+                  <label class="field" style="margin-top:.5rem;">
+                    <span class="lab">
+                      <input type="checkbox" bind:checked={ovIsMultiSet} style="margin-right:.5rem;" />
+                      Part of multi-game set
+                    </span>
+                  </label>
+
+                  {#if ovIsMultiSet}
+                    <div class="row">
+                      <label class="field">
+                        <span class="lab">Best of</span>
+                        <select class="select" bind:value={ovBestOf}>
+                          <option value="3">Best of 3</option>
+                          <option value="5">Best of 5</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span class="lab">Game #</span>
+                        <input class="select" type="number" min="1" step="1" bind:value={ovGameNumber} />
+                      </label>
+                    </div>
+                  {/if}
+
                   <div class="row">
                     <label class="field">
-                      <span class="lab">Team 1 score</span>
+                      <span class="lab">Team 1 score (GAME)</span>
                       <input class="select" type="number" min="0" step="1" bind:value={ovTeam1Score} />
                     </label>
                     <label class="field">
-                      <span class="lab">Team 2 score</span>
+                      <span class="lab">Team 2 score (GAME)</span>
                       <input class="select" type="number" min="0" step="1" bind:value={ovTeam2Score} />
                     </label>
                     <label class="field">
@@ -669,6 +866,14 @@
                       <input class="select" type="number" min="1" step="1" bind:value={ovWinnerId} />
                     </label>
                   </div>
+
+                  <label class="field" style="margin-top:.5rem;">
+                    <span class="lab">Diff calculation</span>
+                    <select class="select" bind:value={ovDiffMode}>
+                      <option value="score">By match score (2-0 = +2 / -2)</option>
+                      <option value="kills">By kills (kills - deaths)</option>
+                    </select>
+                  </label>
 
                   <div class="divider"></div>
 
@@ -699,9 +904,7 @@
     gap: 1rem;
   }
   @media (max-width: 980px) {
-    .grid {
-      grid-template-columns: 1fr;
-    }
+    .grid { grid-template-columns: 1fr; }
   }
   .card {
     border-radius: 16px;
@@ -714,9 +917,7 @@
     font-size: 1.05rem;
     margin-bottom: 0.4rem;
   }
-  .muted {
-    opacity: 0.75;
-  }
+  .muted { opacity: 0.75; }
   .mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.9rem;
@@ -741,10 +942,7 @@
     min-width: 180px;
     flex: 1;
   }
-  .lab {
-    font-size: 0.85rem;
-    opacity: 0.9;
-  }
+  .lab { font-size: 0.85rem; opacity: 0.9; }
   .select {
     padding: 0.55rem 0.65rem;
     border-radius: 12px;
@@ -752,9 +950,7 @@
     background: rgba(0, 0, 0, 0.25);
     color: rgba(255, 255, 255, 0.92);
   }
-  select.select {
-    appearance: none;
-  }
+  select.select { appearance: none; }
   .btn {
     appearance: none;
     border: 1px solid rgba(255, 255, 255, 0.12);
@@ -764,10 +960,7 @@
     border-radius: 12px;
     cursor: pointer;
   }
-  .btn:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .coral {
     background: rgba(255, 107, 107, 0.18);
     border-color: rgba(255, 107, 107, 0.35);
@@ -784,24 +977,15 @@
     border-radius: 12px;
     margin: 0.5rem 0;
   }
-  .block {
-    margin: 0.75rem 0;
-  }
+  .block { margin: 0.75rem 0; }
   .preview {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 12px;
     padding: 0.75rem;
     background: rgba(0, 0, 0, 0.18);
   }
-  .preview-title {
-    font-weight: 900;
-    margin-bottom: 0.4rem;
-  }
-  .preview-line {
-    display: flex;
-    gap: 0.5rem;
-    align-items: baseline;
-  }
+  .preview-title { font-weight: 900; margin-bottom: 0.4rem; }
+  .preview-line { display: flex; gap: 0.5rem; align-items: baseline; }
   .stats-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -821,10 +1005,7 @@
     padding: 0.75rem;
     background: rgba(0, 0, 0, 0.18);
   }
-  .poke-grid {
-    display: grid;
-    gap: 0.35rem;
-  }
+  .poke-grid { display: grid; gap: 0.35rem; }
   .poke-row {
     display: grid;
     grid-template-columns: 1fr 90px 90px;

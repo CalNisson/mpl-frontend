@@ -1,257 +1,152 @@
 <script>
-  import { onMount, afterUpdate } from 'svelte';
-  import { getSeasons, getSeasonDashboard, getSeasonBadges } from '../lib/api.js';
-  import SeasonOverview from '../components/SeasonOverview.svelte';
-  import StandingsTable from '../components/StandingsTable.svelte';
-  import MatchesByWeek from '../components/MatchesByWeek.svelte';
-  import PokemonLeaderboard from '../components/PokemonLeaderboard.svelte';
-  import PlayoffsBracket from '../components/PlayoffsBracket.svelte';
-  import Badges from '../components/Badges.svelte';
-  import { leagueContext } from "../lib/leagueStore";
-  import { push } from "svelte-spa-router";
-  import { get } from "svelte/store";
+  import { auth } from "../lib/authStore.js";
+  import { link, push } from "svelte-spa-router";
 
-  let seasons = [];
-  let selectedSeasonId = null;
-  let loading = false;
-  let dashboard = null;
-  let error = '';
-  let seasonBadges = [];
+  const tokenStore = auth.token;
+  const meStore = auth.me;
 
-  $: hasPlayins =
-    !!dashboard &&
-    Array.isArray(dashboard.matches) &&
-    dashboard.matches.some((m) => m.is_playins);
+  $: token = $tokenStore;
+  $: me = $meStore;
 
-  $: hasPlayoffs =
-    !!dashboard &&
-    Array.isArray(dashboard.matches) &&
-    dashboard.matches.some((m) => m.is_playoff);
-
-  // 👇 ref and height for the standings card
-  let standingsContainer;
-  let matchesMaxHeight = 0;
-
-  // --- helper to sync the URL with the selected season ---
-  function syncUrlSeason(id) {
-    if (typeof window === "undefined") return;
-
-    // only persist season param on the Home (seasons) route: "#/" or "#"
-    const hash = window.location.hash || "#/";
-    const onHome = hash === "#/" || hash === "#";
-
-    const url = new URL(window.location.href);
-
-    if (!onHome) {
-      // if we leave Home, remove it so other tabs don't carry it
-      url.searchParams.delete("season");
-      window.history.replaceState({}, "", url);
-      return;
-    }
-
-    if (id != null) url.searchParams.set("season", id);
-    else url.searchParams.delete("season");
-
-    window.history.replaceState({}, "", url);
+  function go(path) {
+    push(path);
   }
-
-  // ✅ NEW: remove ?season=... when navigating away from Home
-  function onHashChange() {
-    syncUrlSeason(selectedSeasonId);
-  }
-
-  onMount(async () => {
-    // ✅ listen for tab/route changes (hash router)
-    window.addEventListener("hashchange", onHashChange);
-
-    try {
-      seasons = await getSeasons();
-
-      if (seasons.length > 0) {
-        let initialId = null;
-        if (typeof window !== 'undefined') {
-          const url = new URL(window.location.href);
-          const seasonParam = url.searchParams.get('season');
-
-          if (seasonParam) {
-            const parsed = Number(seasonParam);
-            // Only use it if it matches a real season
-            if (seasons.some((s) => s.id === parsed)) {
-              initialId = parsed;
-            }
-          }
-        }
-
-        // Fallback to first season if URL param is missing/invalid
-        if (initialId === null) {
-          initialId = seasons[0].id;
-        }
-
-        selectedSeasonId = initialId;
-        syncUrlSeason(initialId); // keep URL in sync
-        await loadDashboard(initialId);
-      }
-    } catch (e) {
-      console.error(e);
-      error = 'Failed to load seasons: ' + e.message;
-    }
-
-    // ✅ cleanup when component unmounts
-    return () => {
-      window.removeEventListener("hashchange", onHashChange);
-    };
-  });
-
-  async function loadDashboard(id) {
-    loading = true;
-    error = '';
-    dashboard = null;
-    seasonBadges = [];
-    try {
-      const [dash, badges] = await Promise.all([
-        getSeasonDashboard(id),
-        getSeasonBadges(id)
-      ]);
-      dashboard = dash;
-      seasonBadges = badges;
-    } catch (e) {
-      console.error(e);
-      error = 'Failed to load season data: ' + e.message;
-    } finally {
-      loading = false;
-    }
-  }
-
-  function handleSeasonChange(event) {
-    const id = Number(event.target.value);
-    selectedSeasonId = id;
-    syncUrlSeason(id);   // update URL when dropdown changes
-    loadDashboard(id);
-  }
-
-  // 🔍 keep matchesMaxHeight in sync with the standings card
-  function updateMatchesHeight() {
-    if (standingsContainer) {
-      matchesMaxHeight = standingsContainer.offsetHeight;
-    }
-  }
-
-  // runs after every DOM update where relevant state might have changed
-  afterUpdate(() => {
-    updateMatchesHeight();
-  });
 </script>
 
+<div class="wrap">
+  <div class="hero card">
+    <div class="kicker">Draft League Viewer</div>
+    <h1>Track seasons, standings, rosters, stats, and Hall of Fame history.</h1>
 
-
-<div class="app-shell">
-  <header class="app-header">
-    <div>
-      <div class="app-title">Draft League Viewer</div>
-      <div class="muted">Explore seasons, standings, matches, and Pokémon stats.</div>
-    </div>
-
-    <div>
-      {#if seasons.length > 0}
-        <select class="select" bind:value={selectedSeasonId} on:change={handleSeasonChange}>
-          {#each seasons as season}
-            <option value={season.id}>{season.name}</option>
-          {/each}
-        </select>
-      {:else}
-        <span class="muted">No seasons found</span>
-      {/if}
-    </div>
-  </header>
-
-  {#if error}
-    <div class="card" style="border-color: #f97373; color: #fecaca;">
-      {error}
-    </div>
-  {/if}
-
-  {#if loading}
-    <div class="card">
-      Loading season data…
-    </div>
-  {:else if dashboard}
-    <div class="grid-2" style="margin-bottom: 1rem;">
-      <SeasonOverview {dashboard} />
-      <PokemonLeaderboard stats={dashboard?.pokemonStats} />
-    </div>
-
-    {#if !loading && dashboard}
-      <div class="grid-1" style="margin-bottom: 1rem;">
-        <Badges badges={seasonBadges} />
+    {#if token}
+      <div class="sub">
+        You’re signed in as <span class="mono">{me?.username ?? me?.email ?? "your account"}</span>.
+      </div>
+      <div class="actions">
+        <button class="primary" on:click={() => go("/leagues")}>Go to Leagues</button>
+        <button class="ghost" on:click={() => go("/hall-of-fame")}>Go to Hall of Fame</button>
+      </div>
+      <div class="hint muted">
+        Tip: On Leagues / Hall of Fame, use the Organization + League selector to choose where you want to view data.
+      </div>
+    {:else}
+      <div class="sub">
+        Sign in to access league tools and league-specific views.
+      </div>
+      <div class="actions">
+        <a class="primary" href="#/login" use:link>Login</a>
+        <a class="ghost" href="#/register" use:link>Create account</a>
       </div>
     {/if}
+  </div>
 
-    <div class="grid-2" style="margin-bottom: 1.5rem;">
-      <div bind:this={standingsContainer}>
-        <StandingsTable
-          teams={dashboard.teams}
-          matches={dashboard.matches}
-          matchGames={dashboard.matchGames}
-        />
-      </div>
-
-      <MatchesByWeek
-        matches={dashboard.matches}
-        matchGames={dashboard.matchGames}
-        maxHeight={matchesMaxHeight}
-      />
+  <div class="grid">
+    <div class="card feature">
+      <div class="feature-title">Leagues</div>
+      <div class="muted">Active season dashboard, standings, teams/rosters, draft tools, transactions, schedule, playoffs.</div>
     </div>
+    <div class="card feature">
+      <div class="feature-title">Hall of Fame</div>
+      <div class="muted">All-time leaders, medals, MVPs, badges, coach history all filtered by your selected league.</div>
+    </div>
+  </div>
 
-    {#if hasPlayins || hasPlayoffs}
-      <div class="playoffs-section">
-        {#if hasPlayins}
-          <PlayoffsBracket
-            phase="playins"
-            matches={dashboard.matches}
-            matchGames={dashboard.matchGames}
-            teams={dashboard.teams}
-            style="margin-bottom: 1.5rem;"
-          />
-        {/if}
-
-        {#if hasPlayoffs}
-          <PlayoffsBracket
-            phase="playoffs"
-            matches={dashboard.matches}
-            matchGames={dashboard.matchGames}
-            teams={dashboard.teams}
-          />
-        {/if}
-      </div>
-    {/if}
-  {/if}
+  <div class="card footer">
+    <div class="muted">
+      Not seeing any organizations/leagues after you sign in? You may not be added to any yet. Please reach out to your League Master in order to be added.
+    </div>
+  </div>
 </div>
 
 <style>
-  main {
-    min-height: 100vh;
-    margin: 0;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    background: #050813;
-  }
-
-  .grid-2 {
-    align-items: flex-start;
-  }
-
-  .playoffs-section {
+  .wrap {
+    max-width: 1100px;
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    margin-top: 1.5rem;
-    margin-bottom: 1.5rem;
-    width: 100%;
+    gap: 1rem;
   }
 
-  .playoffs-section > * {
-    max-width: 1200px;
-    width: 100%;
+  .hero {
+    padding: 1.25rem;
   }
+
+  .kicker {
+    font-weight: 900;
+    opacity: .9;
+    letter-spacing: .02em;
+    margin-bottom: .25rem;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 1.65rem;
+    line-height: 1.25;
+  }
+
+  .sub {
+    margin-top: .65rem;
+    opacity: .85;
+  }
+
+  .actions {
+    margin-top: 1rem;
+    display: flex;
+    gap: .75rem;
+    flex-wrap: wrap;
+  }
+
+  .primary,
+  .ghost {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: .6rem .9rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.12);
+    font-weight: 800;
+    cursor: pointer;
+  }
+
+  .primary {
+    background: rgba(255, 107, 107, 0.22);
+    border-color: rgba(255, 107, 107, 0.35);
+    color: white;
+  }
+
+  .ghost {
+    background: rgba(255,255,255,.06);
+    color: rgba(255,255,255,.88);
+  }
+
+  .hint {
+    margin-top: .85rem;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .feature-title {
+    font-weight: 900;
+    margin-bottom: .35rem;
+  }
+
+  .footer {
+    padding: .9rem 1rem;
+  }
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-weight: 700;
+  }
+
+  .muted { opacity: .75; }
 </style>

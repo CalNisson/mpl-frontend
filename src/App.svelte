@@ -32,6 +32,47 @@
   $: inHall = path === "/hall-of-fame" || path.startsWith("/hall-of-fame/");
   $: needsLeagueContext = inLeagues || inHall;
 
+  // ---------------------------------
+  // Route guards + URL query hygiene
+  // ---------------------------------
+  function sanitizeSearchParamsForPath(p) {
+    if (typeof window === "undefined") return;
+
+    // NOTE: svelte-spa-router uses the hash for routing. These params are the
+    // real URL query params (before the #), e.g. /?tab=medals#/leagues
+    const url = new URL(window.location.href);
+
+    // Only Hall of Fame uses URL search params currently.
+    const allow = new Set();
+    if (p === "/hall-of-fame" || p.startsWith("/hall-of-fame/")) {
+      allow.add("tab");
+      allow.add("season");
+    }
+
+    // Remove anything not explicitly allowed for the current page.
+    let changed = false;
+    for (const k of Array.from(url.searchParams.keys())) {
+      if (!allow.has(k)) {
+        url.searchParams.delete(k);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      window.history.replaceState({}, "", url);
+    }
+  }
+
+  // ✅ If user is not logged in, trying to access gated pages redirects to Login.
+  $: if (!token && needsLeagueContext && path !== "/login" && path !== "/register") {
+    // preserve URL cleanliness as we redirect
+    sanitizeSearchParamsForPath("/login");
+    push("/login");
+  }
+
+  // ✅ Always sanitize search params when route changes (pre-hash query string).
+  $: sanitizeSearchParamsForPath(path);
+
   // ready only if both chosen
   $: hasOrg = !!ctx?.organization;
   $: hasLeague = !!ctx?.league;
@@ -64,9 +105,6 @@
   <header class="app-header">
     <div class="left">
       <div class="app-title">Draft League Viewer</div>
-      <div class="muted">
-        Pick an organization + league, then explore.
-      </div>
     </div>
 
     <!-- Topmost navbar: two halves -->

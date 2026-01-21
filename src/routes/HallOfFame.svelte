@@ -32,6 +32,7 @@
   }
 
   let tab = "seasons";
+  let kickedSeasonsTabForLeagueId = null;
 
   function setTab(next) {
     tab = next;
@@ -188,8 +189,16 @@
 
   // If the user changes tab to seasons after being on another tab,
   // ensure the season dashboard loads.
-  $: if (leagueId && tab === "seasons" && loadedForLeagueId === leagueId && !dashboard && !loading) {
-    // kick it once
+  $: if (
+    leagueId &&
+    tab === "seasons" &&
+    loadedForLeagueId === leagueId &&
+    !dashboard &&
+    !loading &&
+    kickedSeasonsTabForLeagueId !== leagueId
+  ) {
+    kickedSeasonsTabForLeagueId = leagueId;
+
     (async () => {
       try {
         seasons = await getSeasons();
@@ -209,6 +218,7 @@
       }
     })();
   }
+
 </script>
 
 {#if !leagueId}
@@ -311,6 +321,14 @@
           {/if}
         </div>
       {/if}
+    {:else}
+      <div class="card muted">
+        {#if error}
+          {error}
+        {:else}
+          No Hall of Fame data is available for this league yet.
+        {/if}
+      </div>
     {/if}
   {:else if tab === "mvps"}
     <HofMvps />
