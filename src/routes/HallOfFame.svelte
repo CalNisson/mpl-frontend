@@ -10,11 +10,15 @@
   import PlayoffsBracket from "../components/PlayoffsBracket.svelte";
   import Badges from "../components/Badges.svelte";
 
-  // ✅ New HoF tab panels (components)
+  // ✅ HoF tab panels (components)
   import HofMvps from "../components/hof/hofMvps.svelte";
   import HofBadges from "../components/hof/hofBadges.svelte";
   import HofCoaches from "../components/hof/hofCoaches.svelte";
   import HofMedals from "../components/hof/hofMedals.svelte";
+
+  // ✅ Restored tabs (existing pages)
+  import PokemonCareerStats from "../pages/PokemonCareerStats.svelte";
+  import CoachCrosstable from "../pages/CoachCrosstable.svelte";
 
   // ✅ reactive league selection
   $: leagueId = $leagueContext?.league?.id ?? null;
@@ -22,7 +26,15 @@
   // -------------------------
   // Tab routing via ?tab=
   // -------------------------
-  const VALID_TABS = new Set(["seasons", "mvps", "badges", "coaches", "medals"]);
+  const VALID_TABS = new Set([
+    "seasons",
+    "pokemon",
+    "crosstable",
+    "mvps",
+    "badges",
+    "coaches",
+    "medals"
+  ]);
 
   function getTabFromUrl() {
     if (typeof window === "undefined") return "seasons";
@@ -41,8 +53,9 @@
     const url = new URL(window.location.href);
     url.searchParams.set("tab", next);
 
+    // Only the Seasons tab uses ?season=
     if (next !== "seasons") {
-        url.searchParams.delete("season"); // optional
+      url.searchParams.delete("season");
     }
 
     window.history.replaceState({}, "", url);
@@ -136,7 +149,8 @@
 
     loadedForLeagueId = leagueId;
 
-
+    // Only pre-load the seasons dashboard when we're on seasons tab
+    // (but it's fine to load seasons list regardless; leaving as-is for now)
     loading = true;
     error = "";
     dashboard = null;
@@ -160,8 +174,15 @@
         }
 
         selectedSeasonId = initialId;
-        syncUrlSeason(initialId);
-        await loadDashboard(initialId);
+
+        // only load dashboard if we're on seasons tab
+        if (tab === "seasons") {
+          syncUrlSeason(initialId);
+          await loadDashboard(initialId);
+        } else {
+          // if not on seasons, ensure season param doesn't linger
+          syncUrlSeason(null);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -171,24 +192,17 @@
     }
   })();
 
-  function onHashChange() {
-    syncTabFromUrl();
-    syncUrlSeason(selectedSeasonId);
-  }
-
   onMount(() => {
     syncTabFromUrl();
     window.addEventListener("hashchange", syncTabFromUrl);
     window.addEventListener("popstate", syncTabFromUrl);
     return () => {
-        window.removeEventListener("hashchange", syncTabFromUrl);
-        window.removeEventListener("popstate", syncTabFromUrl);
+      window.removeEventListener("hashchange", syncTabFromUrl);
+      window.removeEventListener("popstate", syncTabFromUrl);
     };
   });
 
-
-  // If the user changes tab to seasons after being on another tab,
-  // ensure the season dashboard loads.
+  // If the user switches back to Seasons, ensure the dashboard is loaded once
   $: if (
     leagueId &&
     tab === "seasons" &&
@@ -211,6 +225,7 @@
             if (seasons.some((s) => s.id === parsed)) initialId = parsed;
           }
           selectedSeasonId = initialId;
+          syncUrlSeason(initialId);
           await loadDashboard(initialId);
         }
       } catch (e) {
@@ -219,6 +234,14 @@
     })();
   }
 
+  // When leaving seasons tab, ensure ?season= doesn't linger
+  $: if (typeof window !== "undefined" && tab !== "seasons") {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("season")) {
+      url.searchParams.delete("season");
+      window.history.replaceState({}, "", url);
+    }
+  }
 </script>
 
 {#if !leagueId}
@@ -226,44 +249,56 @@
     Pick an organization + league above to view Hall of Fame.
   </div>
 {:else}
-  <!-- ✅ HoF navbar lives UNDER the org/league selector (which is in App.svelte) -->
   <div class="hof-nav card" aria-label="Hall of Fame navigation">
     <a
-        class="hof-link"
-        class:is-active={tab === "seasons"}
-        href="#/hall-of-fame?tab=seasons"
-        on:click|preventDefault={() => setTab("seasons")}
+      class="hof-link"
+      class:is-active={tab === "seasons"}
+      href="#/hall-of-fame?tab=seasons"
+      on:click|preventDefault={() => setTab("seasons")}
     >Seasons</a>
 
     <a
-        class="hof-link"
-        class:is-active={tab === "mvps"}
-        href="#/hall-of-fame?tab=mvps"
-        on:click|preventDefault={() => setTab("mvps")}
+      class="hof-link"
+      class:is-active={tab === "pokemon"}
+      href="#/hall-of-fame?tab=pokemon"
+      on:click|preventDefault={() => setTab("pokemon")}
+    >Pokémon</a>
+
+    <a
+      class="hof-link"
+      class:is-active={tab === "crosstable"}
+      href="#/hall-of-fame?tab=crosstable"
+      on:click|preventDefault={() => setTab("crosstable")}
+    >Crosstable</a>
+
+    <a
+      class="hof-link"
+      class:is-active={tab === "mvps"}
+      href="#/hall-of-fame?tab=mvps"
+      on:click|preventDefault={() => setTab("mvps")}
     >MVPs</a>
 
     <a
-        class="hof-link"
-        class:is-active={tab === "badges"}
-        href="#/hall-of-fame?tab=badges"
-        on:click|preventDefault={() => setTab("badges")}
+      class="hof-link"
+      class:is-active={tab === "badges"}
+      href="#/hall-of-fame?tab=badges"
+      on:click|preventDefault={() => setTab("badges")}
     >Badges</a>
 
     <a
-        class="hof-link"
-        class:is-active={tab === "coaches"}
-        href="#/hall-of-fame?tab=coaches"
-        on:click|preventDefault={() => setTab("coaches")}
+      class="hof-link"
+      class:is-active={tab === "coaches"}
+      href="#/hall-of-fame?tab=coaches"
+      on:click|preventDefault={() => setTab("coaches")}
     >Coaches</a>
 
     <a
-        class="hof-link"
-        class:is-active={tab === "medals"}
-        href="#/hall-of-fame?tab=medals"
-        on:click|preventDefault={() => setTab("medals")}
+      class="hof-link"
+      class:is-active={tab === "medals"}
+      href="#/hall-of-fame?tab=medals"
+      on:click|preventDefault={() => setTab("medals")}
     >Medals</a>
   </div>
-
 
   {#if tab === "seasons"}
     <div class="card" style="display:flex; justify-content: space-between; align-items:center; gap: 1rem; margin-bottom: 1rem;">
@@ -307,7 +342,7 @@
         </div>
 
         <div class="matches-wrap" style={`max-height:${matchesMaxHeight || 0}px;`}>
-            <MatchesByWeek matches={dashboard.matches} matchGames={dashboard.matchGames} />
+          <MatchesByWeek matches={dashboard.matches} matchGames={dashboard.matchGames} />
         </div>
       </div>
 
@@ -330,12 +365,22 @@
         {/if}
       </div>
     {/if}
+
+  {:else if tab === "pokemon"}
+    <PokemonCareerStats />
+
+  {:else if tab === "crosstable"}
+    <CoachCrosstable />
+
   {:else if tab === "mvps"}
     <HofMvps />
+
   {:else if tab === "badges"}
     <HofBadges />
+
   {:else if tab === "coaches"}
     <HofCoaches />
+
   {:else if tab === "medals"}
     <HofMedals />
   {/if}

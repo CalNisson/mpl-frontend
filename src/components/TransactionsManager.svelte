@@ -274,14 +274,24 @@
     ? meta.team_point_total - (faCurrentPoints - faDropPoints)
     : 0;
 
+  function bannedForPokemon(id) {
+    return meta?.pokemon?.find((p) => p.pokemon_id === id)?.is_banned ?? false;
+  }
+
+  function undraftableForPokemon(id) {
+    return meta?.pokemon?.find((p) => p.pokemon_id === id)?.is_undraftable ?? false;
+  }
+
+
   $: faAvailablePokemon = (meta?.pokemon ?? [])
     .filter((p) => !p.is_owned)
+    .filter((p) => !p.is_banned && !p.is_undraftable)
     .filter((p) => p.points <= faMaxAffordable)
     .filter((p) => {
       if (!faSearch.trim()) return true;
       return p.pokemon_name.toLowerCase().includes(faSearch.trim().toLowerCase());
     })
-    .slice(0, 250); // safety cap for rendering
+    .slice(0, 250);
 
   // ---- Derived: Trade checks (UI-level; backend enforces real validation) ----
   $: tradeA = meta ? teamById(tradeTeamA) : null;
@@ -726,7 +736,9 @@
                   <label class="check-row">
                     <input
                       type="checkbox"
-                      disabled={p.points > faMaxAffordable && !faPickups.has(p.pokemon_id)}
+                      disabled={
+                        (!faPickups.has(p.pokemon_id) && (p.points > faMaxAffordable || p.is_banned || p.is_undraftable))
+                      }
                       checked={faPickups.has(p.pokemon_id)}
                       on:change={() => (faPickups = toggleSet(faPickups, p.pokemon_id))}
                     />

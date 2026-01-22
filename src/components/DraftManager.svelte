@@ -660,7 +660,6 @@
           <label>
             <span class="lab">Team points</span>
             <input type="number" min="0" bind:value={teamPointTotal} disabled={!canEdit} />
-            <span class="hint muted">Stored in tier_lists.team_point_total</span>
           </label>
 
           <label>

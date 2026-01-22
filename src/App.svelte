@@ -31,6 +31,8 @@
   $: inLeagues = path === "/leagues" || path.startsWith("/leagues/");
   $: inHall = path === "/hall-of-fame" || path.startsWith("/hall-of-fame/");
   $: needsLeagueContext = inLeagues || inHall;
+  $: inAdmin = path === "/admin" || path.startsWith("/admin/");
+  $: isAdmin = Array.isArray(me?.global_roles) && me.global_roles.includes("admin");
 
   // ---------------------------------
   // Route guards + URL query hygiene
@@ -64,10 +66,16 @@
   }
 
   // ✅ If user is not logged in, trying to access gated pages redirects to Login.
-  $: if (!token && needsLeagueContext && path !== "/login" && path !== "/register") {
+  $: if (!token && (needsLeagueContext || inAdmin) && path !== "/login" && path !== "/register") {
     // preserve URL cleanliness as we redirect
     sanitizeSearchParamsForPath("/login");
     push("/login");
+  }
+
+  // ✅ Admin-only gate
+  $: if (token && inAdmin && !isAdmin) {
+    sanitizeSearchParamsForPath("/");
+    push("/");
   }
 
   // ✅ Always sanitize search params when route changes (pre-hash query string).
@@ -111,6 +119,9 @@
     <nav class="tabs">
       <a href="#/leagues" use:link class:active={inLeagues}>Leagues</a>
       <a href="#/hall-of-fame" use:link class:active={inHall}>Hall of Fame</a>
+      {#if token && isAdmin}
+        <a href="#/admin" use:link class:active={inAdmin}>Admin</a>
+      {/if}
 
       <div class="spacer"></div>
 

@@ -801,3 +801,32 @@ export async function patchMatchSummary(matchId, payload) {
   });
   return handle(res);
 }
+
+
+
+// ----------------------------
+// Admin
+// ----------------------------
+
+// NOTE: These endpoints require the caller to have the global role "admin".
+// Suggested backend routes:
+// - GET    /admin/users
+// - PATCH  /admin/users/:user_id    { coach_id?: number|null, status?: "active"|"banned"|... }
+// - GET    /admin/organizations     (returns orgs with leagues[])
+export async function adminListUsers() {
+  const res = await apiFetch(`/admin/users`, { method: "GET" });
+  return handle(res);
+}
+
+export async function adminUpdateUser(userId, patch) {
+  const res = await apiFetch(`/admin/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch ?? {}),
+  });
+  return handle(res);
+}
+
+export async function getAllOrganizationsWithLeagues() {
+  const res = await apiFetch(`/admin/organizations`, { method: "GET" });
+  return handle(res);
+}

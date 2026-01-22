@@ -379,6 +379,17 @@
 
     const aligns = mappedTeam1 === m.team1_id && mappedTeam2 === m.team2_id;
     const alignsSwapped = mappedTeam1 === m.team2_id && mappedTeam2 === m.team1_id;
+    const matchTeamsOk = aligns || alignsSwapped;
+
+    if (!matchTeamsOk) {
+      mismatches.push({
+        kind: "match_teams",
+        message:
+          `Selected match is ${m.team1_name} vs ${m.team2_name}, ` +
+          `but replay maps to ${b1?.rt?.team_name ?? "?"} vs ${b2?.rt?.team_name ?? "?"}. ` +
+          `Upload is blocked unless you use Override.`,
+      });
+    }
 
     // Assign scores relative to the match record
     if (aligns) {
@@ -421,9 +432,9 @@
 
     readyToUpload =
       mismatches.length === 0 &&
+      matchTeamsOk &&
       team1_score != null &&
       team2_score != null &&
-      // winner can be null for double-loss; but your current rules require it
       finalWinner != null;
 
     // preload override defaults
@@ -758,12 +769,14 @@
 
               {#if mapping.mismatches?.length}
                 <div class="error">
-                  <div style="font-weight:800; margin-bottom:.25rem;">Roster mismatches (upload blocked)</div>
+                  <div style="font-weight:800; margin-bottom:.25rem;">Validation issues (upload blocked)</div>
                   {#each mapping.mismatches as mm}
                     {#if mm.kind === "roster"}
                       <div>
                         <b>{mm.player}</b> has Pokémon not on <b>{mm.team_name}</b>: {mm.missing.join(", ")}
                       </div>
+                    {:else if mm.kind === "match_teams"}
+                      <div>{mm.message}</div>
                     {:else}
                       <div>{mm.message}</div>
                     {/if}

@@ -123,15 +123,97 @@
 
 
   // ---- Tabs ----
-  $: tabs = ["Overview", "Leaderboard", "Teams", "Tier List", "Draft", "Schedule", "Transactions", "Playoffs"].concat(
-    isLeagueMaster ? ["Match Reporting"] : []
-  );
+  const BASE_TABS = [
+    "Overview",
+    "Leaderboard",
+    "Teams",
+    "Tier List",
+    "Draft",
+    "Schedule",
+    "Transactions",
+    "Playoffs"
+  ];
+
+  // Tabs that depend on permissions (avoid referencing `tabs` from any reactive block that also triggers `loadLeagueMe()`)
+  $: tabs = BASE_TABS.concat(isLeagueMaster ? ["Match Reporting"] : []);
+
+  // Tabs that can legitimately be missing until permissions finish loading.
+  // This prevents a refresh on a protected tab from briefly failing `tabs.includes(tab)`
+  // and resetting the tab + URL back to Overview.
+  const PROTECTED_TABS = new Set(["Match Reporting"]);
+  $: permissionsReady = hasLeague && !loadingMe && !loadingLeagueMe;
+
   let tab = "Overview";
-  function setTab(next) {
-    tab = next;
+
+  // ---- URL query param (hash router) ----
+  function getHashPathAndParams() {
+    if (typeof window === "undefined") return { path: "", params: new URLSearchParams() };
+
+    const rawHash = window.location.hash || "";
+    const withoutHash = rawHash.startsWith("#") ? rawHash.slice(1) : rawHash;
+
+    const qIdx = withoutHash.indexOf("?");
+    const path = qIdx === -1 ? withoutHash : withoutHash.slice(0, qIdx);
+    const query = qIdx === -1 ? "" : withoutHash.slice(qIdx + 1);
+
+    return { path, params: new URLSearchParams(query) };
   }
 
-  // ---- Create Season ----
+  function getHashQueryParam(key) {
+    const { params } = getHashPathAndParams();
+    return params.get(key);
+  }
+
+  function setHashQueryParam(key, value) {
+    if (typeof window === "undefined") return;
+
+    const { path, params } = getHashPathAndParams();
+
+    if (value == null || value === "") params.delete(key);
+    else params.set(key, value);
+
+    const qs = params.toString();
+    const nextHash = qs ? `${path}?${qs}` : path;
+
+    // Replace hash without pushing history entries
+    const base = window.location.href.split("#")[0];
+    window.history.replaceState(null, "", `${base}#${nextHash}`);
+  }
+
+  let suppressTabUrlWrite = false;
+
+  function syncTabFromUrl() {
+    const t = getHashQueryParam("tab");
+    if (!t) return;
+
+    // Avoid immediately writing the same value back while we're applying it
+    suppressTabUrlWrite = true;
+    tab = t;
+    suppressTabUrlWrite = false;
+  }
+
+  function setTab(next) {
+    tab = next;
+
+    if (!suppressTabUrlWrite) {
+      setHashQueryParam("tab", next);
+    }
+  }
+
+  // Keep tab valid if permissions change (e.g., Match Reporting appears/disappears)
+  $: if (tab && tabs.length && !tabs.includes(tab)) {
+    const permsReady = !loadingMe && !loadingLeagueMe;
+    const isProtected = PROTECTED_TABS.has(tab);
+
+    // If the tab is protected and permissions are still loading, don't "correct"
+    // it yet. Otherwise, a refresh on Match Reporting will briefly see tabs without
+    // Match Reporting, force tab=Overview, and then overwrite the URL.
+    if (!(isProtected && !permsReady)) {
+      tab = "Overview";
+      if (!suppressTabUrlWrite) setHashQueryParam("tab", tab);
+    }
+  }
+
   let showCreateSeason = false;
   let seasonName = "";
   let seasonStartDate = "";
@@ -456,20 +538,43 @@
 
 
   // ---- lifecycle ----
-  onMount(async () => {
-    await loadMe();
-    await loadLeagueMe();
-    await refreshSeasonsAndMaybeDashboard();
+  onMount(() => {
+    // Initialize tab from URL on first mount and keep it in sync with back/forward.
+    syncTabFromUrl();
+
+    const onHashChange = () => {
+      syncTabFromUrl();
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("hashchange", onHashChange);
+    }
+
+    (async () => {
+      await loadMe();
+      await loadLeagueMe();
+      await refreshSeasonsAndMaybeDashboard();
+    })();
+
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("hashchange", onHashChange);
+      }
+    };
   });
 
-  // refresh when league changes
   let lastLeagueId = null;
   $: if (hasLeague) {
     const nextId = ctx.league.id;
     if (nextId !== lastLeagueId) {
       lastLeagueId = nextId;
 
-      tab = "Overview";
+      // Initialize tab from URL (e.g. #/leagues?tab=Teams). If absent, default to Overview.
+      syncTabFromUrl();
+      if (!tab) tab = "Overview";
+      if (!getHashQueryParam("tab")) setHashQueryParam("tab", tab);
+
+
       showCreateSeason = false;
       seasonName = "";
       seasonStartDate = "";
@@ -490,6 +595,8 @@
     openTeamId = null;
     teamDetails = {};
   }
+
+
 
   // Convenient extracts
   $: season = dashboard?.season ?? activeSeason ?? null;
@@ -1162,9 +1269,6 @@
                           <div class="panel-title">Roster</div>
                           <div class="panel-sub muted">Season totals for this team.</div>
 
-                          <div class="muted" style="margin:6px 0;">
-                            roster len: {rosterLenByTeamId[t.id] ?? 0}
-                          </div>
                           <table class="pretty-table">
                             <thead>
                               <tr>

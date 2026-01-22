@@ -1080,7 +1080,7 @@
         {previewMode === "playins" ? "Play-ins Bracket Preview" : "Playoffs Bracket Preview"}
       </div>
       <div class="panel-sub muted">
-        This is a <b>structure preview</b>. Matches are placeholders and do not write to the backend.
+        This is a <b>structure preview</b>.
       </div>
 
       {#if previewMode === "playins" && !preview.playinsRounds.length}
