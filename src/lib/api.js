@@ -1,6 +1,6 @@
 // src/lib/api.js
 import { auth } from "./authStore";
-import { getLeagueId, getLeagueSlug } from "./leagueStore";
+import { getLeagueId, getLeagueSlug, clearLeagueContext } from "./leagueStore";
 
 // You can override this with VITE_API_BASE_URL in a .env file if you want.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -12,8 +12,8 @@ async function handle(res) {
     // Auto-clear token on unauthorized
     if (res.status === 401) {
       auth.clear();
-      // Optional: if you want to kick them to login immediately
-      // window.location.hash = "#/login";
+      clearApiCache();
+      clearLeagueContext();
     }
 
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -94,7 +94,8 @@ export async function getMe() {
 
 export function logout() {
   auth.clear();
-  // optional: window.location.hash = "#/login";
+  clearApiCache();
+  clearLeagueContext();
 }
 
 // ----------------------------
@@ -418,7 +419,8 @@ export async function getCoachSeasonDetails(coachId, seasonId, leagueArg) {
 }
 
 export async function getMyOrganizations() {
-  return cached("my-orgs", async () => {
+  const t = auth.getToken() || "anon";
+  return cached(`my-orgs:${t}`, async () => {
     const res = await apiFetch(`/organizations/mine`);
     return handle(res);
   });
@@ -434,7 +436,8 @@ export async function createOrganization({ name, slug, description }) {
 }
 
 export async function getOrganizationLeagues(orgSlug) {
-  return cached(`org-leagues:${orgSlug}`, async () => {
+  const t = auth.getToken() || "anon";
+  return cached(`org-leagues:${t}:${orgSlug}`, async () => {
     const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/leagues`);
     return handle(res);
   });
