@@ -10,6 +10,7 @@ import Register from "./routes/Register.svelte";
 import Leagues from "./routes/Leagues.svelte";
 import HallOfFame from "./routes/HallOfFame.svelte";
 import Admin from "./pages/Admin.svelte";
+import InviteAccept from "./pages/InviteAccept.svelte";
 
 export default {
   "/": Home,
@@ -20,6 +21,7 @@ export default {
   "/orgs/new": CreateOrg,
   "/leagues/new": CreateLeague,
   "/login": Login,
+  "/invite": InviteAccept,
   "/register": Register,
   "/leagues": Leagues,
   "/hall-of-fame": HallOfFame,

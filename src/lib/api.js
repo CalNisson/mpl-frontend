@@ -833,3 +833,65 @@ export async function getAllOrganizationsWithLeagues() {
   const res = await apiFetch(`/admin/organizations`, { method: "GET" });
   return handle(res);
 }
+
+
+// ---- Aliases / Admin helpers ----
+export async function adminListOrgsWithLeagues() {
+  return getAllOrganizationsWithLeagues();
+}
+
+// ---- Coach Accounts (admin) ----
+export async function adminUpsertCoachAccount(body) {
+  const res = await apiFetch(`/admin/coach_accounts`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
+export async function adminDeleteCoachAccount(body) {
+  const res = await apiFetch(`/admin/coach_accounts`, {
+    method: "DELETE",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
+// ---- Organization Invites (admin/org owner) ----
+//
+// NOTE: These endpoints may differ depending on your backend routes.
+// If you named them differently, change the paths here in one place.
+const ORG_INVITES_BASE = "/org_invites";
+
+export async function adminListOrgInvites(orgId) {
+  const res = await apiFetch(`${ORG_INVITES_BASE}?org_id=${encodeURIComponent(orgId)}`, {
+    method: "GET",
+  });
+  return handle(res);
+}
+
+export async function adminCreateOrgInvite(body) {
+  const res = await apiFetch(`${ORG_INVITES_BASE}`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
+export async function adminRevokeOrgInvite(inviteId) {
+  if (inviteId == null) throw new Error("adminRevokeOrgInvite: missing inviteId");
+  const res = await apiFetch(`${ORG_INVITES_BASE}/${encodeURIComponent(inviteId)}`, {
+    method: "DELETE",
+  });
+  return handle(res);
+}
+
+// Accept an organization invite (used by InviteAccept.svelte)
+// Backend route is: POST /invites/:token/accept (requires Authorization)
+export async function acceptOrgInvite(token) {
+  if (!token || !String(token).trim()) throw new Error("acceptOrgInvite: missing token");
+  const res = await apiFetch(`/invites/${encodeURIComponent(String(token).trim())}/accept`, {
+    method: "POST",
+  });
+  return handle(res);
+}

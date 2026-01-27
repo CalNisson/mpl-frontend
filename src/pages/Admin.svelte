@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy, tick } from "svelte";
   import { push } from "svelte-spa-router";
-
+  import OrgInvitesManager from "../components/OrgInvitesManager.svelte";
   import { auth } from "../lib/authStore.js";
   import {
     getMe,
@@ -10,6 +10,7 @@
     getAllOrganizationsWithLeagues,
     adminListUsers,
     adminUpdateUser,
+    adminUpsertCoachAccount,
   } from "../lib/api.js";
 
   const meStore = auth.me;
@@ -20,27 +21,28 @@
 
   $: isAdmin = Array.isArray(me?.global_roles) && me.global_roles.includes("admin");
 
-  let tab = "users"; // users | orgs
+  let tab = "users"; // users | orgs | invites
   let loading = false;
   let error = "";
 
   // ---- Users ----
   let users = [];
   let coaches = [];
+  let orgs = []; // for coach link modal
   let savingUserId = null;
 
   // Actions menu state (floating overlay)
   let openMenuUserId = null;
   let menuPos = { top: 0, left: 0 };
 
-  // Name Player modal state
-  let showNameModal = false;
-  let namingUser = null; // user being edited
+  // Link Coach modal state
+  let showLinkModal = false;
+  let linkingUser = null; // user being edited
   let coachFilter = "";
-  let selectedCoachId = null; // selected coach id for naming
+  let selectedCoachId = null;
+  let selectedOrgId = null;
 
-  // ---- Orgs/Leagues ----
-  let orgs = [];
+  // ---- Create Org ----
   let newOrg = { name: "", slug: "", description: "" };
   let creatingOrg = false;
 
@@ -50,15 +52,13 @@
 
   function statusLabel(s) {
     const v = (s ?? "").toString().toLowerCase();
-    if (!v) return "unknown";
-    return v;
+    return v || "unknown";
   }
 
-  function coachNameById(id) {
-    if (id == null) return "";
-    const cid = Number(id);
-    const c = coaches.find((x) => Number(x.id) === cid);
-    return c ? c.name : "";
+  function orgNameById(id) {
+    const oid = Number(id);
+    const o = (orgs ?? []).find((x) => Number(x.id) === oid);
+    return o ? o.name : `Org #${id}`;
   }
 
   async function loadUsersTab() {
@@ -67,11 +67,14 @@
     openMenuUserId = null;
 
     try {
-      const [u, c] = await Promise.all([adminListUsers(), getAllCoaches()]);
+      const [u, c, o] = await Promise.all([
+        adminListUsers(),
+        getAllCoaches(),
+        getAllOrganizationsWithLeagues(),
+      ]);
 
       users = Array.isArray(u) ? u : [];
 
-      // Normalize coach payloads so we always have { id, name }
       const raw = Array.isArray(c) ? c : [];
       coaches = raw.map((x) => ({
         id: x.id,
@@ -84,10 +87,13 @@
           x.username ??
           "",
       }));
+
+      orgs = Array.isArray(o) ? o : [];
     } catch (e) {
       error = e?.message || String(e);
       users = [];
       coaches = [];
+      orgs = [];
     } finally {
       loading = false;
     }
@@ -112,6 +118,7 @@
   async function refreshCurrentTab() {
     if (tab === "users") return loadUsersTab();
     if (tab === "orgs") return loadOrgsTab();
+    // invites manager loads itself; nothing to do here
   }
 
   async function saveUser(user, patch) {
@@ -131,7 +138,6 @@
   // Actions: floating menu
   // ------------------------
   function toggleMenu(userId, event) {
-    // toggle off
     if (openMenuUserId === userId) {
       openMenuUserId = null;
       return;
@@ -145,17 +151,17 @@
 
     const r = btn.getBoundingClientRect();
 
-    const width = 180;
+    const width = 200;
     const margin = 8;
 
-    let left = r.right - width; // right aligned
-    let top = r.bottom + 6; // below button
+    let left = r.right - width;
+    let top = r.bottom + 6;
 
     left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
 
-    const estimatedHeight = 96; // enough for 2 items
+    const estimatedHeight = 120;
     if (top + estimatedHeight > window.innerHeight - margin) {
-      top = r.top - estimatedHeight - 6; // open upward if near bottom
+      top = r.top - estimatedHeight - 6;
       top = Math.max(margin, top);
     }
 
@@ -163,46 +169,49 @@
     openMenuUserId = userId;
   }
 
-  function closeMenu() {
-    openMenuUserId = null;
-  }
-
   function onGlobalClick(e) {
     const el = e?.target;
     if (!el) return;
-    // clicks inside the kebab button or floating menu should not close
     if (el.closest?.(".kebab")) return;
     if (el.closest?.(".menu-float")) return;
-    // clicks inside modal should not close menu implicitly (optional)
     if (el.closest?.(".modal")) return;
-
     openMenuUserId = null;
   }
 
   function onGlobalKeydown(e) {
     if (e.key === "Escape") {
       if (openMenuUserId != null) openMenuUserId = null;
-      if (showNameModal) closeNamePlayer();
+      if (showLinkModal) closeLinkCoach();
     }
   }
 
   // ------------------------
-  // Name Player modal
+  // Link Coach modal
   // ------------------------
-  function openNamePlayer(user) {
-    namingUser = user;
+  function openLinkCoach(user) {
+    linkingUser = user;
     coachFilter = "";
-    selectedCoachId = user?.coach_id ?? null;
-    showNameModal = true;
-    closeMenu();
+    selectedCoachId = null;
+    selectedOrgId = (orgs?.[0]?.id ?? null);
+
+    // If user already has a coach link, preselect first link (helps edits)
+    const first = Array.isArray(user?.coach_accounts) ? user.coach_accounts[0] : null;
+    if (first) {
+      selectedCoachId = first.coach_id ?? null;
+      selectedOrgId = first.org_id ?? selectedOrgId;
+    }
+
+    showLinkModal = true;
+    openMenuUserId = null;
     tick();
   }
 
-  function closeNamePlayer() {
-    showNameModal = false;
-    namingUser = null;
+  function closeLinkCoach() {
+    showLinkModal = false;
+    linkingUser = null;
     coachFilter = "";
     selectedCoachId = null;
+    selectedOrgId = null;
   }
 
   $: filteredCoaches = (coaches ?? []).filter((c) => {
@@ -212,10 +221,33 @@
     return label.includes(q);
   });
 
-  async function submitNamePlayer() {
-    if (!namingUser) return;
-    await saveUser(namingUser, { coach_id: selectedCoachId ?? null });
-    closeNamePlayer();
+  async function submitLinkCoach() {
+    if (!linkingUser) return;
+    if (selectedOrgId == null) {
+      error = "Please select an organization.";
+      return;
+    }
+    if (selectedCoachId == null) {
+      error = "Please select a coach.";
+      return;
+    }
+
+    savingUserId = linkingUser.id;
+    resetMsg();
+    try {
+      await adminUpsertCoachAccount({
+        user_id: linkingUser.id,
+        coach_id: selectedCoachId,
+        org_id: Number(selectedOrgId),
+      });
+      // simplest: refresh users
+      await loadUsersTab();
+      closeLinkCoach();
+    } catch (e) {
+      error = e?.message || String(e);
+    } finally {
+      savingUserId = null;
+    }
   }
 
   // ------------------------
@@ -223,30 +255,28 @@
   // ------------------------
   async function banUser(user) {
     const label = user.username || user.email || `User #${user.id}`;
-
     const ok = window.confirm(
       `Are you sure you want to ban ${label}?\n\nThey will no longer be able to log in.`
     );
     if (!ok) return;
 
     await saveUser(user, { status: "banned" });
-    closeMenu();
+    openMenuUserId = null;
   }
 
   async function unbanUser(user) {
     const label = user.username || user.email || `User #${user.id}`;
-
     const ok = window.confirm(
       `Are you sure you want to unban ${label}?\n\nThey will be able to log in again.`
     );
     if (!ok) return;
 
     await saveUser(user, { status: "active" });
-    closeMenu();
+    openMenuUserId = null;
   }
 
   // ------------------------
-  // Create org (unchanged)
+  // Create org
   // ------------------------
   function slugify(s) {
     return (s ?? "")
@@ -285,7 +315,6 @@
     window.addEventListener("click", onGlobalClick, true);
     window.addEventListener("keydown", onGlobalKeydown, true);
 
-    // Ensure /auth/me loaded (and roles)
     try {
       if (token && !me) await getMe();
     } catch {}
@@ -320,7 +349,7 @@
     <div style="display:flex; justify-content: space-between; align-items:center; gap: 1rem;">
       <div>
         <div style="font-weight: 900; font-size: 1.05rem;">Admin Panel</div>
-        <div class="muted">Manage users, organizations, and league data.</div>
+        <div class="muted">Manage users, organizations, and invites.</div>
       </div>
       <button class="btn" on:click={refreshCurrentTab} disabled={loading}>
         {loading ? "Refreshing…" : "Refresh"}
@@ -348,6 +377,16 @@
       >
         Organizations
       </button>
+      <button
+        class:active={tab === "invites"}
+        class="tab"
+        on:click={() => {
+          tab = "invites";
+          // OrgInvitesManager loads itself
+        }}
+      >
+        Invites
+      </button>
     </div>
   </div>
 
@@ -368,7 +407,7 @@
             <th style="min-width:210px;">Email</th>
             <th style="min-width:180px;">Username</th>
             <th style="min-width:120px;">Status</th>
-            <th style="min-width:220px;">Coach Link</th>
+            <th style="min-width:320px;">Coach Accounts</th>
             <th style="min-width:140px;">Created</th>
             <th style="min-width:90px; text-align:right;">Actions</th>
           </tr>
@@ -386,13 +425,18 @@
                   <span class={"pill " + statusLabel(u.status)}>{statusLabel(u.status)}</span>
                 </td>
                 <td>
-                  {#if u.coach_id == null}
-                    <span class="muted">(NULL)</span>
+                  {#if Array.isArray(u.coach_accounts) && u.coach_accounts.length > 0}
+                    <div class="links">
+                      {#each u.coach_accounts as ca (ca.coach_id + ":" + ca.org_id)}
+                        <span class="link-pill">
+                          <span class="muted">{orgNameById(ca.org_id)}:</span>
+                          <span style="font-weight:900; margin-left:.25rem;">{ca.coach_name}</span>
+                          <span class="muted" style="margin-left:.25rem;">(#{ca.coach_id})</span>
+                        </span>
+                      {/each}
+                    </div>
                   {:else}
-                    <span style="font-weight:800;">
-                      {coachNameById(u.coach_id) || `(Unknown #${u.coach_id})`}
-                    </span>
-                    <span class="muted"> (#{u.coach_id})</span>
+                    <span class="muted">(none)</span>
                   {/if}
                 </td>
                 <td class="muted">{u.created_at ? String(u.created_at).slice(0, 10) : "-"}</td>
@@ -414,11 +458,10 @@
       </table>
 
       <div class="muted" style="margin-top:.75rem;">
-        Tip: “Name Player” links an account to a coach_id so they can see the leagues they belong to.
+        Tip: “Link Coach” creates a coach_accounts mapping for a user within an organization.
       </div>
     </div>
 
-    <!-- Floating actions menu (true overlay; does not affect layout/scroll) -->
     {#if openMenuUserId != null}
       <div
         class="menu-float"
@@ -427,10 +470,11 @@
       >
         {#each users as u (u.id)}
           {#if u.id === openMenuUserId}
+            <button class="menu-item" on:click={() => openLinkCoach(u)}>
+              Link Coach…
+            </button>
+
             {#if statusLabel(u.status) !== "banned"}
-              <button class="menu-item" on:click={() => openNamePlayer(u)}>
-                Name Player
-              </button>
               <button class="menu-item danger" on:click={() => banUser(u)}>
                 Ban
               </button>
@@ -444,14 +488,27 @@
       </div>
     {/if}
 
-    {#if showNameModal}
-      <div class="modal-backdrop" role="dialog" aria-modal="true" on:click={closeNamePlayer}>
+    {#if showLinkModal}
+      <div class="modal-backdrop" role="dialog" aria-modal="true" on:click={closeLinkCoach}>
         <div class="modal" on:click|stopPropagation>
-          <div class="modal-title">Name Player</div>
+          <div class="modal-title">Link Coach</div>
           <div class="muted" style="margin-bottom:.75rem;">
-            Select a coach to link to <span style="font-weight:900;">{namingUser?.username ?? namingUser?.email}</span>.
+            Create/Update a coach_accounts mapping for{" "}
+            <span style="font-weight:900;">{linkingUser?.username ?? linkingUser?.email}</span>.
           </div>
 
+          <label class="label">Organization</label>
+          <select class="input" bind:value={selectedOrgId}>
+            {#if Array.isArray(orgs) && orgs.length > 0}
+              {#each orgs as o (o.id)}
+                <option value={o.id}>{o.name} (id {o.id})</option>
+              {/each}
+            {:else}
+              <option value="">(no orgs loaded)</option>
+            {/if}
+          </select>
+
+          <label class="label" style="margin-top:.6rem;">Coach</label>
           <input class="input" type="text" placeholder="Filter coaches…" bind:value={coachFilter} />
 
           <div class="coach-list" style="margin-top:.6rem;">
@@ -471,18 +528,18 @@
           </div>
 
           <div class="modal-actions">
-            <button class="btn ghost" on:click={closeNamePlayer}>Cancel</button>
+            <button class="btn ghost" on:click={closeLinkCoach}>Cancel</button>
             <button
               class="btn"
-              on:click={submitNamePlayer}
-              disabled={!namingUser || savingUserId === namingUser?.id || selectedCoachId == null}
+              on:click={submitLinkCoach}
+              disabled={!linkingUser || savingUserId === linkingUser?.id || selectedCoachId == null || selectedOrgId == null}
             >
-              {savingUserId === namingUser?.id ? "Saving…" : "Submit"}
+              {savingUserId === linkingUser?.id ? "Saving…" : "Submit"}
             </button>
           </div>
 
           <div class="muted" style="margin-top:.5rem;">
-            Note: Submit is required to apply the link.
+            Note: this upserts by (user_id, coach_id) and sets org_id.
           </div>
         </div>
       </div>
@@ -554,6 +611,9 @@
         {/if}
       </div>
     </div>
+
+  {:else if tab === "invites"}
+    <OrgInvitesManager />
   {/if}
 {/if}
 
@@ -587,13 +647,24 @@
     background: rgba(255,255,255,.06);
   }
   .pill.banned { border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.12); }
+  .pill.disabled { border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.12); }
   .pill.active { border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.10); }
+
+  .links { display:flex; flex-wrap: wrap; gap: .35rem; }
+  .link-pill {
+    display:inline-flex; align-items:center;
+    padding: .22rem .45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.12);
+    background: rgba(255,255,255,.06);
+    font-size: .85rem;
+  }
 
   .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
 
   .label { display:block; font-weight: 800; margin-bottom: .25rem; }
-  .input, .textarea {
+  .input, .textarea, select.input {
     width: 100%;
     padding: .55rem .6rem;
     border-radius: 10px;
@@ -603,11 +674,10 @@
   }
   .textarea { resize: vertical; }
 
-  .org-list { display:flex; flex-direction: column; gap: .75rem; }
+  .org-list { display:flex; flex-direction: column; gap:.75rem; }
   .org-item { padding: .65rem .7rem; border-radius: 12px; border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04); }
   .org-leagues { margin: .55rem 0 0; padding-left: 1.1rem; }
 
-  /* Kebab button */
   .kebab {
     width: 36px;
     height: 34px;
@@ -621,11 +691,10 @@
   }
   .kebab:hover { background: rgba(255,255,255,.10); }
 
-  /* Floating menu: true overlay; avoids scroll container layout */
   .menu-float {
     position: fixed;
     z-index: 9999;
-    width: 180px;
+    width: 200px;
     border-radius: 12px;
     border: 1px solid rgba(255,255,255,.14);
     background: rgba(15, 20, 40, 0.98);
@@ -647,7 +716,6 @@
   .menu-item.danger { color: #fecaca; }
   .menu-item.danger:hover { background: rgba(248,113,113,.12); }
 
-  /* Modal */
   .modal-backdrop {
     position: fixed;
     inset: 0;
