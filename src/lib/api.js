@@ -863,6 +863,14 @@ export async function adminDeleteCoachAccount(body) {
 // If you named them differently, change the paths here in one place.
 const ORG_INVITES_BASE = "/org_invites";
 
+export async function adminListOrgCoaches(orgId) {
+  if (orgId == null) throw new Error("adminListOrgCoaches: missing orgId");
+  const res = await apiFetch(`/admin/organizations/${encodeURIComponent(orgId)}/coaches`, {
+    method: "GET",
+  });
+  return handle(res);
+}
+
 export async function adminListOrgInvites(orgId) {
   const res = await apiFetch(`${ORG_INVITES_BASE}?org_id=${encodeURIComponent(orgId)}`, {
     method: "GET",
@@ -886,8 +894,25 @@ export async function adminRevokeOrgInvite(inviteId) {
   return handle(res);
 }
 
+export async function getInvitePublic(token) {
+  if (!token || !String(token).trim()) throw new Error("getInvitePublic: missing token");
+  const res = await apiFetch(`/invites/${encodeURIComponent(String(token).trim())}/public`, {
+    method: "GET",
+  });
+  return handle(res);
+}
+
 // Accept an organization invite (used by InviteAccept.svelte)
 // Backend route is: POST /invites/:token/accept (requires Authorization)
+export async function acceptOrgInviteRegister(token, body) {
+  if (!token || !String(token).trim()) throw new Error("acceptOrgInviteRegister: missing token");
+  const res = await apiFetch(`/invites/${encodeURIComponent(String(token).trim())}/register`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
 export async function acceptOrgInvite(token) {
   if (!token || !String(token).trim()) throw new Error("acceptOrgInvite: missing token");
   const res = await apiFetch(`/invites/${encodeURIComponent(String(token).trim())}/accept`, {
@@ -895,3 +920,4 @@ export async function acceptOrgInvite(token) {
   });
   return handle(res);
 }
+
