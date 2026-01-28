@@ -94,6 +94,13 @@
     return snapshot?.budgets?.find((b) => b.team_id === id) ?? null;
   }
 
+  // -----------------------------
+  // NEW: lock draft order once draft has started (or ended)
+  // -----------------------------
+  $: draftStatus = snapshot?.state?.status ?? null;
+  $: orderLocked = draftStatus === "running" || draftStatus === "paused" || draftStatus === "ended";
+  $: canEditOrder = !!canEdit && !orderLocked;
+
   // ---- drafted pokemon helpers ----
   $: draftedSet = new Set(
     (snapshot?.picks ?? []).map((p) => p.pokemon_id).filter(Boolean)
@@ -326,7 +333,7 @@
 
   // ---- upgraded drag reorder (flip + hover-swap + indicator) ----
   function onOrderDragStart(item, e) {
-    if (!canEdit) return;
+    if (!canEditOrder) return;
     draggingOrderItem = item;
     overTeamId = item?.team_id ?? null;
 
@@ -343,7 +350,7 @@
   }
 
   function swapOrderWith(target) {
-    if (!canEdit) return;
+    if (!canEditOrder) return;
     if (!snapshot?.order) return;
     if (!draggingOrderItem) return;
     if (!target) return;
@@ -364,12 +371,16 @@
   }
 
   function onOrderDragEnter(target) {
-    if (!canEdit) return;
+    if (!canEditOrder) return;
     overTeamId = target?.team_id ?? null;
     swapOrderWith(target);
   }
 
   async function saveOrder() {
+    if (!canEditOrder) {
+      setFlash("Draft order is locked once the draft starts.", true);
+      return;
+    }
     try {
       const ids = (snapshot?.order ?? []).map((o) => o.team_id);
       await putDraftOrder(seasonId, ids);
@@ -381,6 +392,10 @@
   }
 
   async function randomizeOrder() {
+    if (!canEditOrder) {
+      setFlash("Draft order is locked once the draft starts.", true);
+      return;
+    }
     try {
       await randomizeDraftOrder(seasonId);
       await loadAll({ silent: true });
@@ -715,13 +730,32 @@
         <div class="divider"></div>
 
         <div class="orderTop">
-          <div class="muted">Draft order (drag to reorder)</div>
+          <div class="muted">
+            Draft order
+            {#if orderLocked}
+              <span class="muted">· (locked after draft starts)</span>
+            {:else}
+              <span class="muted">· (drag to reorder)</span>
+            {/if}
+          </div>
           {#if canEdit}
             <div class="orderBtns">
-              <button type="button" class="btn" on:click|preventDefault|stopPropagation={randomizeOrder} disabled={(snapshot.order ?? []).length < 2}>
+              <button
+                type="button"
+                class="btn"
+                on:click|preventDefault|stopPropagation={randomizeOrder}
+                disabled={(snapshot.order ?? []).length < 2 || !canEditOrder}
+                title={!canEditOrder ? "Draft order is locked once the draft starts" : ""}
+              >
                 Randomize
               </button>
-              <button type="button" class="btn coral" on:click|preventDefault|stopPropagation={saveOrder} disabled={(snapshot.order ?? []).length < 2}>
+              <button
+                type="button"
+                class="btn coral"
+                on:click|preventDefault|stopPropagation={saveOrder}
+                disabled={(snapshot.order ?? []).length < 2 || !canEditOrder}
+                title={!canEditOrder ? "Draft order is locked once the draft starts" : ""}
+              >
                 Save order
               </button>
             </div>
@@ -739,12 +773,13 @@
                 !!overTeamId && overTeamId === o.team_id && !(draggingOrderItem && draggingOrderItem.team_id === o.team_id)}
               <li
                 class="orderItem fancy {isActive ? 'active' : ''} {isDrag ? 'dragging' : ''} {isOver ? 'over' : ''}"
-                draggable={canEdit}
+                draggable={canEditOrder}
                 animate:flip={{ duration: dragDuration }}
                 on:dragstart={(e) => onOrderDragStart(o, e)}
                 on:dragend={onOrderDragEnd}
                 on:dragenter={() => onOrderDragEnter(o)}
                 on:dragover|preventDefault
+                title={!canEditOrder ? "Draft order is locked once the draft starts" : ""}
               >
                 <span class="grab" aria-hidden="true">⋮⋮</span>
                 <span class="slot">#{o.slot ?? i + 1}</span>
