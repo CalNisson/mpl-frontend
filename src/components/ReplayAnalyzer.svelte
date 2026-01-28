@@ -353,7 +353,7 @@
                           let faintOwnKill = this.checkOwnKill(faintAttacker, faintMon);
                           killString.attacker = faintAttacker;
                           // NOTE: leaving this exact assignment for parity with your file.
-                          if ((faintOwnKill = "opp")) {
+                          if ((faintOwnKill === "opp")) {
                             faintAttacker.kills[0]++;
                           }
                         } else {
