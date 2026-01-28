@@ -66,6 +66,9 @@
   const CANONICAL_FORMS = new Map([
     ["maushold-three", "maushold"],
     ["maushold-four", "maushold"],
+    ["tatsugiri-droopy", "tatsugiri"],
+    ["tatsugiri-curly", "tatsugiri"],
+    ["tatsugiri-stretchy", "tatsugiri"],
   ]);
 
   function canonicalKeyFromName(name) {
@@ -97,6 +100,7 @@
 
     const k = canonicalKeyFromName(raw);
     if (k === "maushold") return "Maushold";
+    if (k === "tatsugiri") return "Tatsugiri";
     return raw;
   }
 
