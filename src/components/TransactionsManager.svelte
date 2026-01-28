@@ -4,7 +4,8 @@
     getSeasonTransactions,
     getTransactionsMeta,
     createTradeTransaction,
-    createFreeAgencyTransaction
+    createFreeAgencyTransaction,
+    getSeasonSchedule, // ✅ NEW (for "current week" warning)
   } from "../lib/api.js";
   import { leagueContext } from "../lib/leagueStore.js";
 
@@ -196,6 +197,68 @@
   let confirmError = "";
   let submitting = false;
 
+  // ----------------------------
+  // ✅ NEW: "current week" detection from schedule results
+  // ----------------------------
+  let schedule = null;
+
+  function isMatchReported(m) {
+    if (!m) return false;
+
+    // Winner present (most common)
+    if (m.winner_team_id != null) return true;
+    if (m.winner_team != null) return true;
+    if (m.winner_id != null) return true;
+
+    // Series score present (various possible keys)
+    const a =
+      m.team1_score ??
+      m.team_a_score ??
+      m.score_a ??
+      m.score1 ??
+      m.home_score ??
+      null;
+
+    const b =
+      m.team2_score ??
+      m.team_b_score ??
+      m.score_b ??
+      m.score2 ??
+      m.away_score ??
+      null;
+
+    if (a != null && b != null) {
+      const na = Number(a);
+      const nb = Number(b);
+      // If both are numbers (including 0), treat as reported
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return true;
+    }
+
+    // Anything else? (keep conservative)
+    return false;
+  }
+
+  $: scheduleMatches =
+    schedule?.matches ??
+    schedule?.schedule ??
+    schedule?.items ??
+    schedule ??
+    [];
+
+  $: maxReportedWeek = (() => {
+    const arr = Array.isArray(scheduleMatches) ? scheduleMatches : [];
+    let maxW = 0;
+    for (const m of arr) {
+      const w = Number(m?.week ?? 0);
+      if (!Number.isFinite(w) || w <= 0) continue;
+      if (isMatchReported(m)) maxW = Math.max(maxW, w);
+    }
+    return maxW;
+  })();
+
+  $: selectedWeekNum = Number(week ?? 0);
+  $: weekIsOlderThanCurrent = maxReportedWeek > 0 && selectedWeekNum > 0 && selectedWeekNum <= maxReportedWeek;
+
   function openCreate() {
     showCreate = true;
     createKind = "trade";
@@ -217,8 +280,16 @@
     metaLoading = true;
     metaError = "";
     meta = null;
+    schedule = null;
+
     try {
-      meta = await getTransactionsMeta(seasonId);
+      // Fetch both in parallel so we can compute "current week" warning locally
+      const [m, s] = await Promise.all([
+        getTransactionsMeta(seasonId),
+        getSeasonSchedule(seasonId).catch(() => null), // if schedule isn't available, just disable warning
+      ]);
+      meta = m;
+      schedule = s;
     } catch (e) {
       metaError = e?.message ?? String(e);
     } finally {
@@ -281,7 +352,6 @@
   function undraftableForPokemon(id) {
     return meta?.pokemon?.find((p) => p.pokemon_id === id)?.is_undraftable ?? false;
   }
-
 
   $: faAvailablePokemon = (meta?.pokemon ?? [])
     .filter((p) => !p.is_owned)
@@ -737,7 +807,8 @@
                     <input
                       type="checkbox"
                       disabled={
-                        (!faPickups.has(p.pokemon_id) && (p.points > faMaxAffordable || p.is_banned || p.is_undraftable))
+                        (!faPickups.has(p.pokemon_id) &&
+                          (p.points > faMaxAffordable || p.is_banned || p.is_undraftable))
                       }
                       checked={faPickups.has(p.pokemon_id)}
                       on:change={() => (faPickups = toggleSet(faPickups, p.pokemon_id))}
@@ -770,6 +841,17 @@
     {#if showConfirm}
       <div class="confirm">
         <h4>Confirm</h4>
+
+        <!-- ✅ NEW: Week warning banner -->
+        {#if weekIsOlderThanCurrent}
+          <div class="warn-banner">
+            <div class="warn-title">WARNING: Currently selected week is older than the current week</div>
+            <div class="warn-body">
+              You selected <b>Week {selectedWeekNum}</b>, but there are already reported matches in
+              <b>Week {maxReportedWeek}</b>. Double-check the transaction week before submitting.
+            </div>
+          </div>
+        {/if}
 
         {#if createKind === "trade"}
           <div class="confirm-grid">
@@ -959,6 +1041,25 @@
     border: 1px solid rgba(255, 107, 107, 0.25);
     padding: 8px 10px;
     border-radius: 10px;
+  }
+
+  /* ✅ NEW: warning banner */
+  .warn-banner {
+    margin: 10px 0 12px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 80, 80, 0.45);
+    background: rgba(255, 80, 80, 0.12);
+    color: rgba(255, 230, 230, 0.98);
+  }
+  .warn-title {
+    font-weight: 900;
+    margin-bottom: 4px;
+  }
+  .warn-body {
+    opacity: 0.95;
+    line-height: 1.25;
+    font-size: 0.95rem;
   }
 
   /* Modal */
