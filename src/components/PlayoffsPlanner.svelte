@@ -1,5 +1,6 @@
 <script>
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
+  import { getSeasonDashboard, getSeasonSchedule } from "../lib/api.js";
 
   export let seasonId;
   export let leagueId;
@@ -138,26 +139,390 @@
   }
 
   // ----------------------------
+  // Team color helpers (dimmed)
+  // ----------------------------
+  function normalizeHex(c) {
+    if (!c) return null;
+    const s = String(c).trim();
+    if (!s) return null;
+    if (s.startsWith("#")) return s;
+    if (/^[0-9a-fA-F]{6}$/.test(s)) return `#${s}`;
+    return null;
+  }
+
+  function pickPrimaryColor(t) {
+    return normalizeHex(
+      t?.primary_color ??
+        t?.color_primary ??
+        t?.team_color ??
+        t?.color ??
+        t?.color1 ??
+        t?.primaryColor
+    );
+  }
+
+  function hexToRgb(hex) {
+    if (!hex) return null;
+    const h = hex.replace("#", "");
+    if (h.length !== 6) return null;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    if (![r, g, b].every((n) => Number.isFinite(n))) return null;
+    return { r, g, b };
+  }
+
+  function mixRgb(a, b, t) {
+    return {
+      r: Math.round(a.r * (1 - t) + b.r * t),
+      g: Math.round(a.g * (1 - t) + b.g * t),
+      b: Math.round(a.b * (1 - t) + b.b * t)
+    };
+  }
+
+  function rgbToHex(rgb) {
+    const to = (n) => n.toString(16).padStart(2, "0");
+    return `#${to(rgb.r)}${to(rgb.g)}${to(rgb.b)}`;
+  }
+
+  // “Dim” a team color by blending it toward the panel background and keeping it subtle.
+  // t=0 => original, t=1 => background
+  function dimHex(hex, t = 0.15) {
+    const c = hexToRgb(hex);
+    if (!c) return null;
+    const bg = { r: 22, g: 32, b: 64 }; // roughly your app bg (#0b1020)
+    return rgbToHex(mixRgb(c, bg, Math.max(0, Math.min(1, t))));
+  }
+
+  function textColorForBg(hex) {
+    const c = hexToRgb(hex);
+    if (!c) return null;
+    const luminance = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    return luminance > 155 ? "#0b1020" : "#ffffff";
+  }
+
+  function teamPillStyle(t) {
+    const base = pickPrimaryColor(t);
+    if (!base) return "";
+    const bg = dimHex(base, 0.74) ?? base; // a touch more muted
+    const fg = textColorForBg(bg) ?? "#ffffff";
+    // lower-contrast border + slight transparency to soften
+    return `background:${bg}; color:${fg}; border-color: rgba(255,255,255,0.14);`;
+  }
+
+  // ----------------------------
+  // Standings source (season dashboard)
+  // ----------------------------
+  let dashboardStandings = null; // array or null
+  let standingsError = "";
+
+  async function loadDashboardStandings() {
+    standingsError = "";
+    dashboardStandings = null;
+    if (!seasonId) return;
+
+    try {
+      const dash = await getSeasonDashboard(seasonId, leagueId);
+      // Try common shapes:
+      const s =
+        dash?.standings ??
+        dash?.data?.standings ??
+        dash?.leaderboard ??
+        dash?.data?.leaderboard ??
+        dash?.regular_season_standings ??
+        dash?.data?.regular_season_standings ??
+        null;
+
+      dashboardStandings = Array.isArray(s) ? s : null;
+    } catch (e) {
+      standingsError = e?.message ?? String(e);
+      dashboardStandings = null;
+    }
+  }
+
+  onMount(loadDashboardStandings);
+
+  $: {
+    // reload when swapping seasons/leagues
+    seasonId;
+    leagueId;
+    loadDashboardStandings();
+  }
+
+  // ----------------------------
+  // Schedule matches (fallback standings source)
+  // ----------------------------
+  let scheduleMatches = [];
+  let scheduleError = "";
+
+  async function loadScheduleMatches() {
+    scheduleError = "";
+    scheduleMatches = [];
+    if (!seasonId) return;
+
+    try {
+      const out = await getSeasonSchedule(seasonId, leagueId);
+      scheduleMatches = Array.isArray(out) ? out : (out?.matches ?? []);
+      if (!Array.isArray(scheduleMatches)) scheduleMatches = [];
+    } catch (e) {
+      scheduleError = e?.message ?? String(e);
+      scheduleMatches = [];
+    }
+  }
+
+  onMount(loadScheduleMatches);
+
+  $: {
+    seasonId;
+    leagueId;
+    loadScheduleMatches();
+  }
+
+  // ----------------------------
   // Standings / seeding helpers
   // ----------------------------
-  function standingsSort(a, b) {
-    const ra = a?.regular_season_rank ?? a?.rank ?? null;
-    const rb = b?.regular_season_rank ?? b?.rank ?? null;
-    if (Number.isFinite(ra) && Number.isFinite(rb) && ra !== rb) return ra - rb;
+  function numOrNull(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
 
-    const wa = a?.season_wins ?? a?.wins ?? 0;
-    const wb = b?.season_wins ?? b?.wins ?? 0;
+  function firstNumOrNull(...vals) {
+    for (const v of vals) {
+      const n = numOrNull(v);
+      if (n != null) return n;
+    }
+    return null;
+  }
+
+  // Derived standings from schedule (regular season only)
+  let seasonWinsByTeamId = {};
+  let seasonLossesByTeamId = {};
+  let seasonDiffByTeamId = {};
+
+  $: {
+    const wins = {};
+    const losses = {};
+    const diff = {};
+
+    for (const t of teams ?? []) {
+      if (t?.id == null) continue;
+      wins[t.id] = 0;
+      losses[t.id] = 0;
+      diff[t.id] = 0;
+    }
+
+    const excludedMatchIds = new Set(
+      (scheduleMatches ?? [])
+        .filter((m) => m?.is_playoff || m?.is_playins)
+        .map((m) => m.id)
+    );
+
+    for (const m of scheduleMatches ?? []) {
+      if (!m || m.id == null) continue;
+      if (excludedMatchIds.has(m.id)) continue;
+
+      // Prefer IDs if present
+      let t1Id = m.team1_id ?? null;
+      let t2Id = m.team2_id ?? null;
+
+      // Fallback: map by team name if needed
+      if (t1Id == null || t2Id == null) {
+        const t1 = (teams ?? []).find((t) => t?.team_name === m.team1_name);
+        const t2 = (teams ?? []).find((t) => t?.team_name === m.team2_name);
+        t1Id = t1?.id ?? null;
+        t2Id = t2?.id ?? null;
+      }
+
+      if (t1Id == null || t2Id == null) continue;
+
+      const s1 = m.team1_score ?? 0;
+      const s2 = m.team2_score ?? 0;
+
+      // Skip unplayed matches (treat null scores as unplayed).
+      // If 0-0 can be a legit played result for you, tweak this.
+      const hasAnyScore = m.team1_score != null || m.team2_score != null;
+      const played = hasAnyScore && (s1 !== 0 || s2 !== 0);
+      if (!played) continue;
+
+      if (m.is_double_loss) {
+        losses[t1Id] = (losses[t1Id] ?? 0) + 1;
+        losses[t2Id] = (losses[t2Id] ?? 0) + 1;
+
+        diff[t1Id] = (diff[t1Id] ?? 0) - s2;
+        diff[t2Id] = (diff[t2Id] ?? 0) - s1;
+        continue;
+      }
+
+      if (s1 > s2) {
+        wins[t1Id] = (wins[t1Id] ?? 0) + 1;
+        losses[t2Id] = (losses[t2Id] ?? 0) + 1;
+
+        diff[t1Id] = (diff[t1Id] ?? 0) + s1;
+        diff[t2Id] = (diff[t2Id] ?? 0) - s1;
+      } else if (s2 > s1) {
+        wins[t2Id] = (wins[t2Id] ?? 0) + 1;
+        losses[t1Id] = (losses[t1Id] ?? 0) + 1;
+
+        diff[t2Id] = (diff[t2Id] ?? 0) + s2;
+        diff[t1Id] = (diff[t1Id] ?? 0) - s2;
+      } else {
+        // ties: no W/L change, no diff change
+      }
+    }
+
+    seasonWinsByTeamId = wins;
+    seasonLossesByTeamId = losses;
+    seasonDiffByTeamId = diff;
+  }
+
+  function standingsSort(a, b) {
+    // ---- rank (lower is better) ----
+    const ra = firstNumOrNull(
+      a?.regular_season_rank,
+      a?.rank,
+      a?.standing?.rank,
+      a?.standings?.rank,
+      a?.record?.rank,
+      a?.seed,
+      a?.place
+    );
+
+    const rb = firstNumOrNull(
+      b?.regular_season_rank,
+      b?.rank,
+      b?.standing?.rank,
+      b?.standings?.rank,
+      b?.record?.rank,
+      b?.seed,
+      b?.place
+    );
+
+    if (ra != null && rb != null && ra !== rb) return ra - rb;
+
+    // ---- wins (higher is better) ----
+    const wa =
+      seasonWinsByTeamId[a?.id] ??
+      firstNumOrNull(
+        a?.season_wins,
+        a?.wins,
+        a?.standing?.wins,
+        a?.standings?.wins,
+        a?.record?.wins,
+        a?.record?.w
+      ) ??
+      0;
+
+    const wb =
+      seasonWinsByTeamId[b?.id] ??
+      firstNumOrNull(
+        b?.season_wins,
+        b?.wins,
+        b?.standing?.wins,
+        b?.standings?.wins,
+        b?.record?.wins,
+        b?.record?.w
+      ) ??
+      0;
+
     if (wb !== wa) return wb - wa;
 
-    const da = a?.differential ?? a?.diff ?? 0;
-    const db = b?.differential ?? b?.diff ?? 0;
+    // ---- differential (higher is better) ----
+    const da =
+      seasonDiffByTeamId[a?.id] ??
+      firstNumOrNull(
+        a?.differential,
+        a?.diff,
+        a?.standing?.differential,
+        a?.standing?.diff,
+        a?.standings?.differential,
+        a?.standings?.diff,
+        a?.record?.diff
+      ) ??
+      0;
+
+    const db =
+      seasonDiffByTeamId[b?.id] ??
+      firstNumOrNull(
+        b?.differential,
+        b?.diff,
+        b?.standing?.differential,
+        b?.standing?.diff,
+        b?.standings?.differential,
+        b?.standings?.diff,
+        b?.record?.diff
+      ) ??
+      0;
+
     if (db !== da) return db - da;
 
-    const la = a?.season_losses ?? a?.losses ?? 0;
-    const lb = b?.season_losses ?? b?.losses ?? 0;
+    // ---- losses (lower is better) ----
+    const la =
+      seasonLossesByTeamId[a?.id] ??
+      firstNumOrNull(
+        a?.season_losses,
+        a?.losses,
+        a?.standing?.losses,
+        a?.standings?.losses,
+        a?.record?.losses,
+        a?.record?.l
+      ) ??
+      0;
+
+    const lb =
+      seasonLossesByTeamId[b?.id] ??
+      firstNumOrNull(
+        b?.season_losses,
+        b?.losses,
+        b?.standing?.losses,
+        b?.standings?.losses,
+        b?.record?.losses,
+        b?.record?.l
+      ) ??
+      0;
+
     if (la !== lb) return la - lb;
 
     return (a?.team_name ?? "").localeCompare(b?.team_name ?? "");
+  }
+
+  // Build a standings-ordered list by *joining* dashboard standings (rank/wins/etc)
+  // onto the teams array you pass into this component.
+  function mergeTeamsWithStandings(teamsList, standingsList) {
+    const teamsSafe = (teamsList ?? []).filter((t) => t && t.id != null);
+
+    if (!Array.isArray(standingsList) || standingsList.length === 0) {
+      return teamsSafe.slice(); // fallback (we still have schedule-derived maps)
+    }
+
+    const byId = new Map(teamsSafe.map((t) => [Number(t.id), t]));
+
+    const merged = [];
+    for (const row of standingsList) {
+      // dashboard rows might be { team_id, team_name, wins, ... } or nested
+      const teamId = firstNumOrNull(row?.team_id, row?.teamId, row?.team?.id);
+      if (teamId == null) continue;
+
+      const base = byId.get(Number(teamId));
+      if (!base) continue;
+
+      // Overlay standings fields onto the team object so standingsSort can use them.
+      merged.push({
+        ...base,
+        team_name: base.team_name ?? row?.team_name ?? row?.name ?? base.name,
+        regular_season_rank: firstNumOrNull(row?.regular_season_rank, row?.rank, row?.place),
+        season_wins: firstNumOrNull(row?.season_wins, row?.wins, row?.record?.wins, row?.record?.w),
+        season_losses: firstNumOrNull(row?.season_losses, row?.losses, row?.record?.losses, row?.record?.l),
+        differential: firstNumOrNull(row?.differential, row?.diff, row?.record?.diff)
+      });
+    }
+
+    // include teams missing from standings (end of list)
+    const seen = new Set(merged.map((t) => Number(t.id)));
+    for (const t of teamsSafe) {
+      if (!seen.has(Number(t.id))) merged.push(t);
+    }
+
+    return merged;
   }
 
   function getStandings(list) {
@@ -286,6 +651,7 @@
       label: roundNames[0] ? `${roundNames[0]} M${idx + 1}` : `Match ${idx + 1}`,
       players: pair.map((t) => ({
         id: t?.id ?? `bye-${idx}`,
+        teamId: t?.id ?? null,
         name: t ? teamLabel(t) : "BYE",
         score: ""
       })),
@@ -310,8 +676,8 @@
             ? `${roundNames[roundIdx]} M${i + 1}`
             : `Round ${roundIdx + 1} M${i + 1}`,
           players: [
-            { id: `tbd-${roundIdx}-${i}-a`, name: "TBD", score: "" },
-            { id: `tbd-${roundIdx}-${i}-b`, name: "TBD", score: "" }
+            { id: `tbd-${roundIdx}-${i}-a`, teamId: null, name: "TBD", score: "" },
+            { id: `tbd-${roundIdx}-${i}-b`, teamId: null, name: "TBD", score: "" }
           ],
           nextMatchId: null
         });
@@ -342,12 +708,9 @@
 
     const size = nextPow2(n);
 
-    // Only do "double-bye pods" when the field is close to full.
-    // Otherwise it should look like normal byes.
-    const allowDoubleBye = n > (3 * size) / 4; // e.g. >12 when size=16
+    const allowDoubleBye = n > (3 * size) / 4;
     if (!allowDoubleBye) return buildStandardPlayoffs(qualified);
 
-    // Seed lookup 1..n (missing seeds => null)
     const bySeed = new Map();
     for (const t of qualified) bySeed.set(t._seed, t);
 
@@ -355,8 +718,6 @@
       return bySeed.get(seed) ?? null;
     }
 
-    // Classic bracket seed order list
-    // e.g. 16 => [1,16,8,9,4,13,5,12,2,15,7,10,3,14,6,11]
     function classicSeedOrder(targetSize) {
       let order = [1, 2];
       let cur = 2;
@@ -372,7 +733,6 @@
       return order;
     }
 
-    // For vertical layout: first-round matches are adjacent pairs in classic order.
     function firstRoundPairOrder(targetSize) {
       const order = classicSeedOrder(targetSize);
       const pairs = [];
@@ -380,8 +740,6 @@
       return pairs;
     }
 
-    // Map "anchor seed" (better seed in a first-round pair) -> vertical index
-    // Lower index = higher on screen
     function seedToVerticalIndex(targetSize) {
       const pairs = firstRoundPairOrder(targetSize);
       const m = new Map();
@@ -394,7 +752,6 @@
 
     const verticalIndexByAnchor = seedToVerticalIndex(size);
 
-    // --- "Slot" model: either a team, or the winner of a match ---
     function slotFromTeam(t) {
       return t ? { kind: "team", team: t } : null;
     }
@@ -411,6 +768,11 @@
       if (slot.kind === "team") return slot.team?.id ?? fallback;
       return `W:${slot.match.id}`;
     }
+    function slotTeamId(slot) {
+      if (!slot) return null;
+      if (slot.kind !== "team") return null;
+      return slot.team?.id ?? null;
+    }
 
     function slotSeed(slot) {
       if (!slot) return null;
@@ -421,7 +783,6 @@
 
     let idCounter = 1;
 
-    // Higher seed (lower number) visually on top when it can be determined.
     function mkMatch(roundIndex, slotIndex, label, slotA, slotB) {
       const id = `W-R${roundIndex}-M${idCounter++}`;
 
@@ -435,7 +796,6 @@
         top = slotB;
         bot = slotA;
       } else if (sa == null && sb != null) {
-        // known seeded team on top if the other is "winner"
         top = slotB;
         bot = slotA;
       }
@@ -446,15 +806,13 @@
         slotIndex,
         label,
         players: [
-          { id: slotId(top, `tbd-${id}-a`), name: slotLabel(top), score: "" },
-          { id: slotId(bot, `tbd-${id}-b`), name: slotLabel(bot), score: "" }
+          { id: slotId(top, `tbd-${id}-a`), teamId: slotTeamId(top), name: slotLabel(top), score: "" },
+          { id: slotId(bot, `tbd-${id}-b`), teamId: slotTeamId(bot), name: slotLabel(bot), score: "" }
         ],
         nextMatchId: null
       };
     }
 
-    // Creates a match ONLY if both sides exist.
-    // If one side is null => auto-advance the other (skipping BYE match entirely).
     function playOrAdvance(roundIndex, slotIndex, label, slotA, slotB, roundBuckets) {
       if (slotA && !slotB) return slotA;
       if (!slotA && slotB) return slotB;
@@ -463,7 +821,6 @@
       const m = mkMatch(roundIndex, slotIndex, label, slotA, slotB);
       roundBuckets[roundIndex].push(m);
 
-      // Wire any upstream matches into this match
       if (slotA?.kind === "match") slotA.match.nextMatchId = m.id;
       if (slotB?.kind === "match") slotB.match.nextMatchId = m.id;
 
@@ -472,8 +829,6 @@
 
     const order = classicSeedOrder(size);
 
-    // Pods are chunks of 4 seeds in classic order.
-    // We'll sort pods by "classic bracket vertical" so 1-path is top, 2-path is bottom, etc.
     const pods = [];
     for (let i = 0; i < order.length; i += 4) {
       const chunk = order.slice(i, i + 4);
@@ -482,7 +837,7 @@
       if (!present.length) continue;
 
       const seedsSorted = present.slice().sort((a, b) => a - b);
-      const topSeed = seedsSorted[0]; // anchor seed for this pod
+      const topSeed = seedsSorted[0];
 
       pods.push({ chunk, topSeed });
     }
@@ -493,17 +848,7 @@
       return ia - ib;
     });
 
-    // Round buckets (arrays of match objects), by roundIndex
-    const buckets = {
-      0: [], // Weighted Round 1
-      1: [], // Weighted Round 2
-      2: [], // Weighted Round 3 (pod finals)
-      3: [], // Semis
-      4: [] // Finals
-    };
-
-    // Build each pod as a chain:
-    // low vs low -> winner vs mid -> winner vs top
+    const buckets = { 0: [], 1: [], 2: [], 3: [], 4: [] };
     const podFinalSlots = [];
 
     for (let podSlot = 0; podSlot < pods.length; podSlot++) {
@@ -517,11 +862,9 @@
       const midSeed = seedsSorted[1] ?? null;
       const lows = seedsSorted.slice(2);
 
-      // Prefer "worst vs best-of-low" (16v9, 15v10, 14v11, 13v12 in a 16)
       let lowASeed = lows[0] ?? null;
       let lowBSeed = lows.length >= 2 ? lows[lows.length - 1] : null;
 
-      // cosmetic: show higher seed number first (16 vs 9)
       if (lowASeed != null && lowBSeed != null && lowASeed < lowBSeed) {
         const tmp = lowASeed;
         lowASeed = lowBSeed;
@@ -533,57 +876,23 @@
       const mid = slotFromTeam(midSeed != null ? teamOrNull(midSeed) : null);
       const top = slotFromTeam(teamOrNull(topSeed));
 
-      const r1Winner = playOrAdvance(
-        0,
-        podSlot,
-        `Weighted • Round 1 M${podSlot + 1}`,
-        lowA,
-        lowB,
-        buckets
-      );
-
-      const r2Winner = playOrAdvance(
-        1,
-        podSlot,
-        `Weighted • Round 2 M${podSlot + 1}`,
-        r1Winner,
-        mid,
-        buckets
-      );
-
-      const podWinner = playOrAdvance(
-        2,
-        podSlot,
-        `Weighted • Round 3 M${podSlot + 1}`,
-        r2Winner,
-        top,
-        buckets
-      );
+      const r1Winner = playOrAdvance(0, podSlot, `Weighted • Round 1 M${podSlot + 1}`, lowA, lowB, buckets);
+      const r2Winner = playOrAdvance(1, podSlot, `Weighted • Round 2 M${podSlot + 1}`, r1Winner, mid, buckets);
+      const podWinner = playOrAdvance(2, podSlot, `Weighted • Round 3 M${podSlot + 1}`, r2Winner, top, buckets);
 
       if (podWinner) podFinalSlots.push(podWinner);
     }
 
-    // Semis + Finals, also skipping BYE matches
-    // Pair pod 0 vs 1, pod 2 vs 3, etc.
     const semiWinners = [];
     for (let i = 0; i < podFinalSlots.length; i += 2) {
       const a = podFinalSlots[i] ?? null;
       const b = podFinalSlots[i + 1] ?? null;
-      const w = playOrAdvance(
-        3,
-        Math.floor(i / 2),
-        `Semifinal ${Math.floor(i / 2) + 1}`,
-        a,
-        b,
-        buckets
-      );
+      const w = playOrAdvance(3, Math.floor(i / 2), `Semifinal ${Math.floor(i / 2) + 1}`, a, b, buckets);
       if (w) semiWinners.push(w);
     }
 
     playOrAdvance(4, 0, "Finals", semiWinners[0] ?? null, semiWinners[1] ?? null, buckets);
 
-    // Build rounds list, omitting empty rounds (since we skipped BYEs),
-    // and IMPORTANT: renumber roundIndex/index so the renderer has no X-gaps.
     const rawRounds = [];
     if (buckets[0].length) rawRounds.push({ name: "Weighted Round 1", key: 0, matches: buckets[0] });
     if (buckets[1].length) rawRounds.push({ name: "Weighted Round 2", key: 1, matches: buckets[1] });
@@ -601,7 +910,6 @@
 
     if (!rawRounds.length) return buildStandardPlayoffs(qualified);
 
-    // Renumber: 0..N-1 and rewrite match.roundIndex to match.
     const rounds = rawRounds.map((r, newIdx) => {
       for (const m of r.matches) m.roundIndex = newIdx;
       return { name: r.name, index: newIdx, matches: r.matches };
@@ -629,6 +937,7 @@
       label: `Play-ins M${idx + 1}`,
       players: pair.map((t) => ({
         id: t?.id ?? `bye-${idx}`,
+        teamId: t?.id ?? null,
         name: t ? teamLabel(t) : "BYE",
         score: ""
       })),
@@ -645,7 +954,7 @@
           roundIndex: 1,
           slotIndex: i,
           label: `Advances to Playoffs #${i + 1}`,
-          players: [{ id: `adv-${i}-a`, name: "TBD", score: "" }],
+          players: [{ id: `adv-${i}-a`, teamId: null, name: "TBD", score: "" }],
           nextMatchId: null
         }))
       }
@@ -663,8 +972,10 @@
   };
 
   function rebuildPreview() {
-    const all = (teams ?? []).filter((t) => t && t.id != null);
-    const seededAll = seedTeams(all, settings.seeding);
+    // IMPORTANT: order comes from dashboard standings if available,
+    // otherwise from schedule-derived standings maps (wins/diff/losses).
+    const base = mergeTeamsWithStandings(teams, dashboardStandings);
+    const seededAll = seedTeams(base, settings.seeding);
 
     const nTeams = seededAll.length;
     const qualifyCount = settings.allQualify ? nTeams : clampInt(settings.qualifyCount, 2, nTeams);
@@ -701,12 +1012,19 @@
     previewVersion++;
   }
 
+  // UI state
+  let previewMode = "playoffs"; // "playoffs" | "playins"
+
   $: {
     settings;
     teams;
     previewMode;
+    dashboardStandings;
+    scheduleMatches;
     rebuildPreview();
   }
+
+  $: teamById = new Map((preview.seededAll ?? []).map((t) => [t.id, t]));
 
   // ----------------------------
   // Bracket renderer helpers
@@ -714,7 +1032,6 @@
   const MATCH_WIDTH = 260;
   const HORIZONTAL_GAP_X = 80;
   const ROUND_GAP_X = MATCH_WIDTH + HORIZONTAL_GAP_X;
-
   const MATCH_HEIGHT_EST = 90;
   const MATCH_GAP_Y = 40;
   const LEFT_MARGIN = 80;
@@ -822,26 +1139,7 @@
     return `left:${c.x - MATCH_WIDTH / 2}px; top:${c.y - MATCH_HEIGHT_EST / 2}px; width:${MATCH_WIDTH}px;`;
   }
 
-  // UI state
-  let previewMode = "playoffs"; // "playoffs" | "playins"
-
-  // ----------------------------
-  // "Inline component" done correctly:
-  // define a component object (no second <script>)
-  // ----------------------------
-  const BracketPreview = {
-    // Svelte component contract
-    $$render($$result, $$props) {
-      // NOTE: This is not used by Svelte runtime in .svelte files directly.
-      // We will NOT use this. (kept to avoid confusion)
-      return "";
-    }
-  };
-
-  // Real approach: use a simple function + markup block via <svelte:component> isn't needed.
-  // We'll instead compute derived values in parent and render with a local "roundsToRender" variable.
   $: roundsToRender = previewMode === "playins" ? preview.playinsRounds : preview.playoffsRounds;
-
   $: matchPositions = computeMatchPositions(roundsToRender ?? []);
   $: connectionLines = buildConnections(roundsToRender ?? [], matchPositions);
   $: dims = bracketDims(roundsToRender ?? [], matchPositions);
@@ -860,6 +1158,18 @@
       <div>
         <div class="title">Playoffs</div>
         <div class="muted">Frontend-only preview (no backend writes yet).</div>
+
+        {#if standingsError}
+          <div class="muted" style="margin-top:.25rem; opacity:.75;">
+            Standings fetch failed: {standingsError}
+          </div>
+        {/if}
+
+        {#if scheduleError}
+          <div class="muted" style="margin-top:.25rem; opacity:.75;">
+            Schedule fetch failed: {scheduleError}
+          </div>
+        {/if}
       </div>
 
       {#if canEdit}
@@ -1059,7 +1369,7 @@
         {:else}
           <div class="seedlist">
             {#each preview.qualified as t (t.id)}
-              <div class="seedrow">
+              <div class="seedrow" style={teamPillStyle(t)}>
                 <div class="seed">#{t._seed}</div>
                 <div class="name">{t.team_name}</div>
                 <div class="meta muted">
@@ -1114,7 +1424,10 @@
 
                       <div class="players">
                         {#each match.players as p (p.id)}
-                          <div class="player-row">
+                          <div
+                            class="player-row"
+                            style={p.teamId ? teamPillStyle(teamById.get(p.teamId)) : ""}
+                          >
                             <span class="player-name">{p.name}</span>
                           </div>
                         {/each}
@@ -1249,11 +1562,11 @@
     padding: 10px;
     border-radius: 14px;
     border: 1px solid rgba(255, 255, 255, 0.07);
-    background: rgba(0, 0, 0, 0.14);
+    /* background color is injected inline per team */
   }
   .seed {
     font-weight: 900;
-    opacity: 0.9;
+    opacity: 0.92;
   }
   .name {
     font-weight: 900;
@@ -1261,6 +1574,7 @@
   .meta {
     grid-column: 1 / -1;
     margin-top: 2px;
+    opacity: 0.85; /* soften the meta over colored bg */
   }
 
   .btn {
@@ -1362,6 +1676,7 @@
     padding: 0.15rem 0.25rem;
     border-radius: 0.4rem;
     border-left: 3px solid transparent;
+    /* background color injected inline when we know teamId */
   }
 
   .player-name {

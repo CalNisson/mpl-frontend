@@ -1,7 +1,8 @@
 <script>
-  export let teams = [];
-  export let matches = [];      // needed so we know which matches are playoffs/playins
-  export let matchGames = [];   // individual game results
+  export let teams = [];         // standings rows (wins/losses/etc)
+  export let seasonTeams = [];   // season teams rows (colors live here)
+  export let matches = [];       // needed so we know which matches are playoffs/playins
+  export let matchGames = [];    // individual game results
 
   // 1) Filter teams that have a placement (only show finalized standings)
   $: filteredTeams = teams;
@@ -16,13 +17,71 @@
 
   // 2) Build a Set of *postseason* match_ids (playoffs + playins) to EXCLUDE from diff/kills calc
   $: excludedMatchIds = new Set(
-    matches
+    (matches ?? [])
       .filter((m) => m.is_playoff || m.is_playins)
       .map((m) => m.id)
   );
 
   // Helper: does this season actually have any matchGames rows?
   $: hasMatchGames = Array.isArray(matchGames) && matchGames.length > 0;
+
+  // ----------------------------
+  // Team color helpers (pill)
+  // ----------------------------
+  function normalizeHex(c) {
+    if (!c) return null;
+    const s = String(c).trim();
+    if (!s) return null;
+    if (s.startsWith("#")) return s;
+    if (/^[0-9a-fA-F]{6}$/.test(s)) return `#${s}`;
+    return null;
+  }
+
+  function hexToRgb(hex) {
+    if (!hex) return null;
+    const h = hex.replace("#", "");
+    if (h.length !== 6) return null;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    if (![r, g, b].every((n) => Number.isFinite(n))) return null;
+    return { r, g, b };
+  }
+
+  function mixRgb(a, b, t) {
+    return {
+      r: Math.round(a.r * (1 - t) + b.r * t),
+      g: Math.round(a.g * (1 - t) + b.g * t),
+      b: Math.round(a.b * (1 - t) + b.b * t)
+    };
+  }
+
+  function rgbToHex(rgb) {
+    const to = (n) => n.toString(16).padStart(2, "0");
+    return `#${to(rgb.r)}${to(rgb.g)}${to(rgb.b)}`;
+  }
+
+  function textColorForBg(hex) {
+    const c = hexToRgb(hex);
+    if (!c) return null;
+    const luminance = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    return luminance > 155 ? "#0b1020" : "#ffffff";
+  }
+
+  // Build a lookup from seasonTeams -> color_primary by team id
+  $: colorById = new Map(
+    (seasonTeams ?? [])
+      .filter((t) => t?.id != null)
+      .map((t) => [Number(t.id), normalizeHex(t?.color_primary)])
+  );
+
+  function teamPillStyle(teamRow) {
+    // standings row id matches seasonTeams id
+    const base = colorById.get(Number(teamRow?.id)) ?? null;
+    if (!base) return "";
+    const fg = textColorForBg(base) ?? "#ffffff";
+    return `background:${base}; color:${fg}; border-color: rgba(255,255,255,0.14);`;
+  }
 
   // Maps we keep updated
   let differentialMap = {};
@@ -36,30 +95,30 @@
     const kills = {};
 
     // Initialize ALL teams (so games vs non-placed teams still count)
-    for (const team of teams) {
+    for (const team of teams ?? []) {
       diff[team.id] = 0;
       kills[team.id] = 0;
     }
 
     // Set of double-loss matches
     const doubleLossMatchIds = new Set(
-      matches
+      (matches ?? [])
         .filter((m) => m.is_double_loss)
         .map((m) => m.id)
     );
 
     if (hasMatchGames) {
       // ---- CASE A: Use matchGames (per-game differential & kills) ----
-      for (const g of matchGames) {
+      for (const g of matchGames ?? []) {
         // ignore postseason games (playoffs + playins)
         if (excludedMatchIds.has(g.match_id)) continue;
 
         // find the match so we know which team was team1 / team2
-        const match = matches.find((m) => m.id === g.match_id);
+        const match = (matches ?? []).find((m) => m.id === g.match_id);
         if (!match) continue;
 
-        const t1 = teams.find((t) => t.team_name === match.team1_name);
-        const t2 = teams.find((t) => t.team_name === match.team2_name);
+        const t1 = (teams ?? []).find((t) => t.team_name === match.team1_name);
+        const t2 = (teams ?? []).find((t) => t.team_name === match.team2_name);
         if (!t1 || !t2) continue;
 
         const s1 = g.team1_score ?? 0;
@@ -82,18 +141,17 @@
         }
 
         // Kills (Bo3): each team gets (4 - opponent_score)
-        // This still applies for double loss: they got those KOs.
         kills[t1.id] += (4 - s2);
         kills[t2.id] += (4 - s1);
       }
     } else {
       // ---- CASE B: No matchGames → use matches table directly (Bo1) ----
-      for (const m of matches) {
+      for (const m of matches ?? []) {
         // ignore postseason (playoffs + playins)
         if (excludedMatchIds.has(m.id)) continue;
 
-        const t1 = teams.find((t) => t.team_name === m.team1_name);
-        const t2 = teams.find((t) => t.team_name === m.team2_name);
+        const t1 = (teams ?? []).find((t) => t.team_name === m.team1_name);
+        const t2 = (teams ?? []).find((t) => t.team_name === m.team2_name);
         if (!t1 || !t2) continue;
 
         const s1 = m.team1_score ?? 0;
@@ -106,17 +164,16 @@
         } else {
           // Normal Bo1 differential: winner gains, loser loses winner's score
           if (s1 > s2) {
-            diff[t1.id] += s1;   // winner
-            diff[t2.id] -= s1;   // loser loses winner's score
+            diff[t1.id] += s1;
+            diff[t2.id] -= s1;
           } else if (s2 > s1) {
-            diff[t2.id] += s2;   // winner
-            diff[t1.id] -= s2;   // loser loses winner's score
+            diff[t2.id] += s2;
+            diff[t1.id] -= s2;
           }
           // ties: no change
         }
 
         // Kills (Bo1): each team gets (6 - opponent_score)
-        // Again, we still award kills in a double loss.
         kills[t1.id] += (6 - s2);
         kills[t2.id] += (6 - s1);
       }
@@ -126,13 +183,8 @@
     killsMap = kills;
   }
 
-  // 4) Sort by:
-  //    - wins (desc)
-  //    - differential (desc)
-  //    - kills (desc)
-  //    - losses (asc)
-  //    - team_name (asc)
-  $: sortedTeams = [...filteredTeams].sort((a, b) => {
+  // 4) Sort by wins → diff → kills → losses → team_name
+  $: sortedTeams = [...(filteredTeams ?? [])].sort((a, b) => {
     const winsA = a.season_wins ?? 0;
     const winsB = b.season_wins ?? 0;
     const winsDiff = winsB - winsA;
@@ -145,15 +197,15 @@
 
     const killsA = killsMap[a.id] ?? 0;
     const killsB = killsMap[b.id] ?? 0;
-    const killsDiff = killsB - killsA; // more kills is better
+    const killsDiff = killsB - killsA;
     if (killsDiff !== 0) return killsDiff;
 
     const lossesA = a.season_losses ?? 0;
     const lossesB = b.season_losses ?? 0;
-    const lossesDiff = lossesA - lossesB; // fewer losses is better
+    const lossesDiff = lossesA - lossesB;
     if (lossesDiff !== 0) return lossesDiff;
 
-    return a.team_name.localeCompare(b.team_name);
+    return (a.team_name ?? "").localeCompare(b.team_name ?? "");
   });
 </script>
 
@@ -183,7 +235,11 @@
         {#each sortedTeams as t, i}
           <tr>
             <td>{i + 1}</td>
-            <td>{t.team_name}</td>
+            <td>
+              <span class="team-pill" style={teamPillStyle(t)}>
+                {t.team_name}
+              </span>
+            </td>
             <td>{t.coach_name}</td>
             {#if showConference}<td>{t.conference}</td>{/if}
             {#if showDivision}<td>{t.division}</td>{/if}
@@ -196,3 +252,15 @@
     </table>
   {/if}
 </div>
+
+<style>
+  .team-pill{
+    display:inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.12);
+    font-weight: 900;
+    line-height: 1.2;
+    background: rgba(255,255,255,0.06); /* fallback if no color */
+  }
+</style>

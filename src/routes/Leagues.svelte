@@ -1143,8 +1143,8 @@
 
         {:else if tab === "Leaderboard"}
           <div class="leaderboard-panels" style="margin-top:.75rem;">
-            <StandingsTable {teams} {matches} {matchGames} />
-            <PokemonLeaderboard stats={pokemonStats} />
+            <StandingsTable teams={teams} seasonTeams={teamsMerged} {matches} {matchGames} />
+            <PokemonLeaderboard stats={pokemonStats} seasonTeams={teamsMerged} />
           </div>
 
         {:else if tab === "Schedule"}
