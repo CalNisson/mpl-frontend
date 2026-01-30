@@ -86,6 +86,8 @@
   // Maps we keep updated
   let differentialMap = {};
   let killsMap = {};
+  let winsMap = {};
+  let lossesMap = {};
 
   // 3) Compute running differential AND kills for each team (regular season only)
   //    - If we have matchGames → use per-game logic (Bo3)
@@ -93,11 +95,15 @@
   $: {
     const diff = {};
     const kills = {};
+    const wins = {};
+    const losses = {};
 
     // Initialize ALL teams (so games vs non-placed teams still count)
     for (const team of teams ?? []) {
       diff[team.id] = 0;
       kills[team.id] = 0;
+      wins[team.id] = 0;
+      losses[team.id] = 0;
     }
 
     // Set of double-loss matches
@@ -106,6 +112,32 @@
         .filter((m) => m.is_double_loss)
         .map((m) => m.id)
     );
+
+    function bumpResult(t1id, t2id, s1, s2, isDL) {
+      if (t1id == null || t2id == null) return;
+
+      if (isDL) {
+        // ✅ double loss: both teams take a loss
+        losses[t1id] += 1;
+        losses[t2id] += 1;
+        return;
+      }
+
+      const a = Number(s1);
+      const b = Number(s2);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+
+      if (a > b) {
+        wins[t1id] += 1;
+        losses[t2id] += 1;
+      } else if (b > a) {
+        wins[t2id] += 1;
+        losses[t1id] += 1;
+      } else {
+        // ties: ignore for now (no W/L)
+      }
+    }
+
 
     if (hasMatchGames) {
       // ---- CASE A: Use matchGames (per-game differential & kills) ----
@@ -123,6 +155,8 @@
 
         const s1 = g.team1_score ?? 0;
         const s2 = g.team2_score ?? 0;
+
+        bumpResult(t1.id, t2.id, s1, s2, doubleLossMatchIds.has(g.match_id));
 
         if (doubleLossMatchIds.has(g.match_id)) {
           // Double loss: both teams "lose" by opponent's score; no one gains
@@ -157,6 +191,8 @@
         const s1 = m.team1_score ?? 0;
         const s2 = m.team2_score ?? 0;
 
+        bumpResult(t1.id, t2.id, s1, s2, !!m.is_double_loss);
+
         if (m.is_double_loss) {
           // Double loss: each team loses by the opponent's score
           diff[t1.id] -= s2;
@@ -181,12 +217,14 @@
 
     differentialMap = diff;
     killsMap = kills;
+    winsMap = wins;
+    lossesMap = losses;
   }
 
   // 4) Sort by wins → diff → kills → losses → team_name
   $: sortedTeams = [...(filteredTeams ?? [])].sort((a, b) => {
-    const winsA = a.season_wins ?? 0;
-    const winsB = b.season_wins ?? 0;
+    const winsA = winsMap[a.id] ?? (a.season_wins ?? 0);
+    const winsB = winsMap[b.id] ?? (b.season_wins ?? 0);
     const winsDiff = winsB - winsA;
     if (winsDiff !== 0) return winsDiff;
 
@@ -200,8 +238,8 @@
     const killsDiff = killsB - killsA;
     if (killsDiff !== 0) return killsDiff;
 
-    const lossesA = a.season_losses ?? 0;
-    const lossesB = b.season_losses ?? 0;
+    const lossesA = lossesMap[a.id] ?? (a.season_losses ?? 0);
+    const lossesB = lossesMap[b.id] ?? (b.season_losses ?? 0);
     const lossesDiff = lossesA - lossesB;
     if (lossesDiff !== 0) return lossesDiff;
 
@@ -243,8 +281,8 @@
             <td>{t.coach_name}</td>
             {#if showConference}<td>{t.conference}</td>{/if}
             {#if showDivision}<td>{t.division}</td>{/if}
-            <td style="text-align: center;">{t.season_wins}</td>
-            <td style="text-align: center;">{t.season_losses}</td>
+            <td style="text-align: center;">{winsMap[t.id] ?? t.season_wins ?? 0}</td>
+            <td style="text-align: center;">{lossesMap[t.id] ?? t.season_losses ?? 0}</td>
             <td style="text-align: center;">{differentialMap[t.id]}</td>
           </tr>
         {/each}

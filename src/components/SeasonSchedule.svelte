@@ -34,6 +34,7 @@
   let editWeek = 1;
   let editTeam1 = "";
   let editTeam2 = "";
+  let editDoubleLoss = false;
   let savingEdit = false;
 
   let lastLoadedSeasonId = null;
@@ -169,11 +170,13 @@
     editWeek = Number(m.week ?? 1);
     editTeam1 = String(m.team1_id ?? "");
     editTeam2 = String(m.team2_id ?? "");
+    editDoubleLoss = !!(m.is_double_loss ?? m.double_loss ?? m.isDoubleLoss);
   }
 
   function cancelEdit() {
     editingId = null;
     savingEdit = false;
+    editDoubleLoss = false;
   }
 
   async function onSaveEdit() {
@@ -191,7 +194,12 @@
     savingEdit = true;
     error = "";
     try {
-      await patchSeasonScheduleMatch(seasonId, editingId, { week, team1_id, team2_id });
+      await patchSeasonScheduleMatch(seasonId, editingId, {
+        week,
+        team1_id,
+        team2_id,
+        is_double_loss: !!editDoubleLoss,
+      });
       await refresh();
       cancelEdit();
     } catch (e) {
@@ -215,7 +223,12 @@
     }
   }
 
+  function isDoubleLoss(m) {
+    return !!(m?.is_double_loss ?? m?.double_loss ?? m?.isDoubleLoss);
+  }
+
   function scoreText(m) {
+    if (isDoubleLoss(m)) return "DL";
     const a = m.team1_score;
     const b = m.team2_score;
     if (a == null || b == null) return "—";
@@ -223,6 +236,7 @@
   }
 
   function winnerLabel(m) {
+    if (isDoubleLoss(m)) return "N/A";
     if (!m.winner_id) return "—";
     if (m.winner_id === m.team1_id) return `${m.team1_name}`;
     if (m.winner_id === m.team2_id) return `${m.team2_name}`;
@@ -314,13 +328,13 @@
               <th>Winner</th>
               <th>Replay</th>
               {#if canEdit && editMode}
-                <th style="width: 200px;"></th>
+                <th style="width: 240px;"></th>
               {/if}
             </tr>
           </thead>
           <tbody>
             {#each scheduleByWeek[wk] as m (m.id)}
-              <tr>
+              <tr class:is-double-loss={isDoubleLoss(m)}>
                 <td>
                   {#if editingId === m.id}
                     <div class="editTeams">
@@ -348,6 +362,11 @@
                           {/each}
                         </select>
                       </label>
+
+                      <label class="dlToggle">
+                        <input type="checkbox" bind:checked={editDoubleLoss} />
+                        <span>Double loss</span>
+                      </label>
                     </div>
                   {:else}
                     <span class="team-pill" style={pillStyle(m.team1_id)}>{m.team1_name}</span>
@@ -355,16 +374,24 @@
                     <span class="team-pill" style={pillStyle(m.team2_id)}>{m.team2_name}</span>
                   {/if}
                 </td>
-                <td>{scoreText(m)}</td>
-                <td>{winnerLabel(m)}</td>
+
                 <td>
-                  {#if m.replay && String(m.replay).trim().length > 0}
-                    <a
-                      href={m.replay}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="replay-link"
-                    >
+                  <div class="scoreCell">
+                    {#if isDoubleLoss(m)}
+                      <span class="dlPill" title="Double loss">DL</span>
+                    {:else}
+                      <span>{scoreText(m)}</span>
+                    {/if}
+                  </div>
+                </td>
+
+                <td>{winnerLabel(m)}</td>
+
+                <td>
+                  {#if isDoubleLoss(m)}
+                    <span class="dlReplay">DOUBLE LOSS</span>
+                  {:else if m.replay && String(m.replay).trim().length > 0}
+                    <a href={m.replay} target="_blank" rel="noopener noreferrer" class="replay-link">
                       REPLAY
                     </a>
                   {:else}
@@ -543,6 +570,57 @@
     gap: 0.25rem;
   }
 
+  .dlToggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    font-weight: 800;
+    opacity: 0.95;
+    user-select: none;
+  }
+
+  .dlToggle input {
+    transform: translateY(1px);
+  }
+
+  .scoreCell {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dlPill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 900;
+    font-size: 0.78rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* ✅ NEW: replay “DOUBLE LOSS” label */
+  .dlReplay {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-weight: 950;
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    border: 1px solid rgba(255, 160, 160, 0.35);
+    background: rgba(255, 107, 107, 0.16);
+    color: rgba(255, 220, 220, 0.98);
+  }
+
+  tr.is-double-loss td {
+    opacity: 0.92;
+  }
+
   @media (max-width: 820px) {
     .editTeams {
       grid-template-columns: 1fr;
@@ -564,5 +642,4 @@
     text-decoration: underline;
     text-decoration-color: rgba(255, 200, 200, 0.6);
   }
-
 </style>

@@ -457,6 +457,21 @@ export async function createLeague({ organization_slug, name, slug, description 
   return handle(res);
 }
 
+export async function updateLeagueRules(league_id, rules) {
+  const id = Number(league_id);
+  if (!Number.isFinite(id)) throw new Error("Invalid league_id");
+
+  const res = await apiFetch(`/leagues/${id}/rules`, {
+    method: "PATCH",
+    body: JSON.stringify({ rules }),
+  });
+
+  // rules can be shown in many views; play it safe and clear any caches that might
+  // include the league object.
+  clearApiCache();
+  return handle(res);
+}
+
 export async function getLeagueMe(leagueArg) {
   const bits = normalizeLeagueBits(leagueArg);
   const qs = new URLSearchParams(bits).toString();

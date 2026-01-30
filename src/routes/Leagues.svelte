@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { leagueContext } from "../lib/leagueStore.js";
+  import { leagueContext, setLeague } from "../lib/leagueStore.js";
   import {
     getMe,
     getLeagueMe,
@@ -9,7 +9,8 @@
     createSeason,
     getCoachSeasonDetails,
     getCoaches,
-    getSeasonTeams
+    getSeasonTeams,
+    updateLeagueRules
   } from "../lib/api.js";
 
   import StandingsTable from "../components/StandingsTable.svelte";
@@ -22,6 +23,162 @@
   import PlayoffsPlanner from "../components/PlayoffsPlanner.svelte";
   import SeasonSchedule from "../components/SeasonSchedule.svelte";
   import { clearApiCache } from "../lib/api.js";
+
+  // ----------------------------
+  // League Rules
+  // ----------------------------
+  let rulesMd = "";
+  let rulesDraft = "";
+  let editingRules = false;
+  let savingRules = false;
+  let rulesMsg = "";
+  let rulesError = "";
+
+  function loadLeagueRules() {
+    rulesMd = (ctx?.league?.rules ?? "").toString();
+    rulesDraft = rulesMd;
+    editingRules = false;
+    rulesMsg = "";
+    rulesError = "";
+  }
+
+  async function saveLeagueRules() {
+    rulesMsg = "";
+    rulesError = "";
+    const leagueId = ctx?.league?.id ?? null;
+    if (!leagueId) {
+      rulesError = "No league selected.";
+      return;
+    }
+
+    savingRules = true;
+    try {
+      const updated = await updateLeagueRules(leagueId, rulesDraft ?? "");
+      rulesMd = updated?.rules ?? (rulesDraft ?? "");
+      rulesDraft = rulesMd;
+      // Keep leagueContext in sync so it persists & other pages see updated rules
+      setLeague({ ...(ctx?.league ?? {}), rules: rulesMd });
+      editingRules = false;
+      rulesMsg = "Rules saved.";
+    } catch (e) {
+      rulesError = e?.message || String(e);
+    } finally {
+      savingRules = false;
+    }
+  }
+
+  function escapeHtml(s) {
+    return (s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // Minimal markdown renderer for PoC (headings, bold/italic, links, lists, inline code)
+  function renderMarkdown(md) {
+    const src = (md ?? "").toString().replace(/\r\n/g, "\n");
+    if (!src.trim()) return '<div class="muted">No rules yet.</div>';
+
+    const lines = src.split("\n");
+    let html = "";
+
+    // list nesting depth (0 = not in list)
+    let listDepth = 0;
+
+    const escapeHtml = (s) =>
+      (s ?? "")
+        .toString()
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+    const inline = (t) => {
+      let out = escapeHtml(t);
+      out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+      out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      out = out.replace(
+        /\[([^\]]+)\]\(([^)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noreferrer">$1</a>'
+      );
+      return out;
+    };
+
+    function closeLists(toDepth = 0) {
+      while (listDepth > toDepth) {
+        html += "</ul>";
+        listDepth -= 1;
+      }
+    }
+
+    function openLists(toDepth) {
+      while (listDepth < toDepth) {
+        html += "<ul>";
+        listDepth += 1;
+      }
+    }
+
+    // 2 spaces == 1 nesting level (common markdown behavior)
+    function indentToDepth(indentStr) {
+      const expanded = indentStr.replace(/\t/g, "  ");
+      const spaces = expanded.length;
+      return Math.floor(spaces / 2) + 1; // +1 because depth=1 means "inside a <ul>"
+    }
+
+    for (const rawLine of lines) {
+      const line = rawLine ?? "";
+      const trimmed = line.trim();
+
+      const h3 = trimmed.match(/^###\s+(.+)$/);
+      const h2 = trimmed.match(/^##\s+(.+)$/);
+      const h1 = trimmed.match(/^#\s+(.+)$/);
+
+      // capture indent BEFORE the bullet
+      const li = line.match(/^(\s*)[-*]\s+(.+)$/);
+
+      if (h1 || h2 || h3) {
+        closeLists(0);
+        const tag = h1 ? "h2" : h2 ? "h3" : "h4";
+        const text = (h1 ?? h2 ?? h3)[1];
+        html += `<${tag}>${inline(text)}</${tag}>`;
+        continue;
+      }
+
+      if (li) {
+        const indent = li[1] ?? "";
+        const text = li[2] ?? "";
+
+        const targetDepth = indentToDepth(indent);
+
+        // If we were in a list and depth decreases/increases, adjust
+        if (listDepth > targetDepth) closeLists(targetDepth);
+        if (listDepth < targetDepth) openLists(targetDepth);
+
+        // Ensure we have at least one list open for any list item
+        if (listDepth === 0) openLists(1);
+
+        html += `<li>${inline(text)}</li>`;
+        continue;
+      }
+
+      if (!trimmed) {
+        closeLists(0);
+        html += '<div class="md-spacer"></div>';
+        continue;
+      }
+
+      closeLists(0);
+      html += `<p>${inline(line)}</p>`;
+    }
+
+    closeLists(0);
+    return html;
+  }
+
 
   $: ctx = $leagueContext;
   $: hasOrg = !!ctx?.organization;
@@ -120,7 +277,6 @@
       loadingDashboard = false;
     }
   }
-
 
   // ---- Tabs ----
   const BASE_TABS = [
@@ -514,6 +670,16 @@
 
   let playoffsPublished = false;
 
+  // keep rules in sync with selected league (frontend-only PoC)
+  let lastRulesLeagueId = null;
+  $: {
+    const lid = ctx?.league?.id ?? null;
+    if (lid !== lastRulesLeagueId) {
+      lastRulesLeagueId = lid;
+      loadLeagueRules();
+    }
+  }
+
   // localStorage key should match the component
   function playoffsKey() {
     const sid = activeSeason?.id ?? "none";
@@ -535,7 +701,6 @@
   } else {
     playoffsPublished = false;
   }
-
 
   // ---- lifecycle ----
   onMount(() => {
@@ -574,7 +739,6 @@
       if (!tab) tab = "Overview";
       if (!getHashQueryParam("tab")) setHashQueryParam("tab", tab);
 
-
       showCreateSeason = false;
       seasonName = "";
       seasonStartDate = "";
@@ -595,8 +759,6 @@
     openTeamId = null;
     teamDetails = {};
   }
-
-
 
   // Convenient extracts
   $: season = dashboard?.season ?? activeSeason ?? null;
@@ -814,28 +976,48 @@
     const teamId = team?.id;
     const det = teamDetails?.[teamId];
 
-    if (det?.summary) return det.summary;
+    let wins = 0;
+    let losses = 0;
+    let diff = 0;
+    let rank = null;
 
-    const raw = det?.details ?? null;
-    if (raw) {
-      const wins = raw?.season_wins ?? raw?.wins ?? 0;
-      const losses = raw?.season_losses ?? raw?.losses ?? 0;
-      const diff = raw?.differential ?? raw?.diff ?? 0;
-      const rank = raw?.regular_season_rank ?? raw?.rank ?? null;
-      return { wins, losses, diff, rank };
+    if (det?.summary) {
+      wins = det.summary.wins ?? 0;
+      losses = det.summary.losses ?? 0;
+      diff = det.summary.diff ?? 0;
+      rank = det.summary.rank ?? null;
+    } else {
+      const raw = det?.details ?? null;
+      if (raw) {
+        wins = raw?.season_wins ?? raw?.wins ?? 0;
+        losses = raw?.season_losses ?? raw?.losses ?? 0;
+        diff = raw?.differential ?? raw?.diff ?? 0;
+        rank = raw?.regular_season_rank ?? raw?.rank ?? null;
+      } else {
+        wins = team?.season_wins ?? team?.wins ?? team?.w ?? team?.win_count ?? 0;
+        losses = team?.season_losses ?? team?.losses ?? team?.l ?? team?.loss_count ?? 0;
+        diff = team?.differential ?? team?.diff ?? team?.season_differential ?? 0;
+        rank = team?.regular_season_rank ?? team?.current_rank ?? team?.rank ?? null;
+      }
     }
 
-    const wins = team?.season_wins ?? team?.wins ?? team?.w ?? team?.win_count ?? 0;
-    const losses = team?.season_losses ?? team?.losses ?? team?.l ?? team?.loss_count ?? 0;
-    const diff = team?.differential ?? team?.diff ?? team?.season_differential ?? 0;
-    const rank = team?.regular_season_rank ?? team?.current_rank ?? team?.rank ?? null;
+    // 🔥 OVERRIDE wins/losses using schedule (this includes DL)
+    if ((matches ?? []).length) {
+      const rec = computeRegularSeasonRecord(team);
+      wins = rec.wins;
+      losses = rec.losses;
+    }
 
     return { wins, losses, diff, rank };
   }
 
+
   // Match tags (same idea as CoachProfile)
   const matchTag = (m) => {
     if (!m) return null;
+    // ✅ NEW: show double loss explicitly
+    if (m.is_double_loss) return "Double Loss";
+
     if (m.is_playoff) return m.playoff_round ? `Playoffs • ${m.playoff_round}` : "Playoffs";
     if (m.is_playins) return m.playins_round ? `Play-ins • ${m.playins_round}` : "Play-ins";
     return null;
@@ -896,6 +1078,9 @@
     const aScoreRaw = pick(m, ["home_score", "team1_score", "team_a_score", "score_home", "scoreA"]);
     const bScoreRaw = pick(m, ["away_score", "team2_score", "team_b_score", "score_away", "scoreB"]);
 
+    // ✅ NEW: carry is_double_loss through (supports a few key variants)
+    const isDoubleLoss = !!pick(m, ["is_double_loss", "double_loss", "isDoubleLoss"]);
+
     // If we can't confidently tell which side team is on, fallback by name (last resort)
     let side = null; // "A" | "B"
     if (aId != null && bId != null) {
@@ -932,7 +1117,11 @@
 
     // Normalize result if needed
     let result = pick(m, ["result", "outcome"]);
-    if (!result && myScore != null && oppScore != null && myScore !== "—" && oppScore !== "—") {
+
+    // ✅ NEW: double loss overrides the normal W/L/T inference
+    if (isDoubleLoss) {
+      result = "DL";
+    } else if (!result && myScore != null && oppScore != null && myScore !== "—" && oppScore !== "—") {
       const a = Number(myScore);
       const b = Number(oppScore);
       if (!Number.isNaN(a) && !Number.isNaN(b)) {
@@ -950,7 +1139,9 @@
       is_playoff: !!m.is_playoff,
       is_playins: !!m.is_playins,
       playoff_round: m.playoff_round ?? null,
-      playins_round: m.playins_round ?? null
+      playins_round: m.playins_round ?? null,
+      // ✅ NEW: needed so matchTag() can show it too
+      is_double_loss: isDoubleLoss
     };
   }
 
@@ -967,6 +1158,27 @@
 
     return arr;
   }
+
+  function computeRegularSeasonRecord(team) {
+    const rows = getTeamSchedule(team)
+      .filter((m) => !m.is_playoff && !m.is_playins); // regular season only
+
+    let wins = 0;
+    let losses = 0;
+    let ties = 0;
+
+    for (const m of rows) {
+      const r = (m?.result ?? "").toString().toUpperCase();
+
+      if (r === "W") wins += 1;
+      else if (r === "L") losses += 1;
+      else if (r === "DL") losses += 1; // ← Double Loss counts as a loss
+      else if (r === "T") ties += 1;
+    }
+
+    return { wins, losses, ties };
+  }
+
 
   // ---- Transactions (CoachProfile-like) ----
   const normalizeTxType = (t) => {
@@ -1116,28 +1328,79 @@
         <div class="card muted" style="margin-top:.75rem;">No dashboard data returned for the active season.</div>
       {:else}
         {#if tab === "Overview"}
-          <div class="card" style="margin-top:.75rem;">
-            <div class="card-header">
-              <div class="card-title">Season Overview</div>
-            </div>
+          <div class="overview-grid" style="margin-top:.75rem;">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">Season Overview</div>
+              </div>
 
-            <div class="season-layout">
-              <div class="season-left">
-                <div class="season-row">
-                  <span class="muted">Name:</span>
-                  <span>{season?.name ?? activeSeason?.name ?? "—"}</span>
-                </div>
+              <div class="season-layout">
+                <div class="season-left">
+                  <div class="season-row">
+                    <span class="muted">Name:</span>
+                    <span>{season?.name ?? activeSeason?.name ?? "—"}</span>
+                  </div>
 
-                <div class="season-row">
-                  <span class="muted">Dates:</span>
-                  <span>{season?.start_date ?? "—"} – {season?.end_date ?? "—"}</span>
-                </div>
+                  <div class="season-row">
+                    <span class="muted">Dates:</span>
+                    <span>{season?.start_date ?? "—"} – {season?.end_date ?? "—"}</span>
+                  </div>
 
-                <div class="season-row">
-                  <span class="muted">Format:</span>
-                  <span>{season?.format ?? "—"}</span>
+                  <div class="season-row">
+                    <span class="muted">Format:</span>
+                    <span>{season?.format ?? "—"}</span>
+                  </div>
                 </div>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">League Rules</div>
+              </div>
+
+              {#if isLeagueMaster}
+                <div class="rules-actions">
+                  {#if editingRules}
+                    <button
+                      class="btn primary"
+                      on:click={() => {
+                        const next = (rulesDraft ?? "").toString();
+                        rulesMd = next;
+                        saveLeagueRules(next);
+                        editingRules = false;
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      class="btn"
+                      on:click={() => {
+                        rulesDraft = rulesMd;
+                        editingRules = false;
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  {:else}
+                    <button class="btn" on:click={() => (editingRules = true)}>Edit</button>
+                  {/if}
+                </div>
+              {/if}
+
+              {#if editingRules && isLeagueMaster}
+                <textarea
+                  class="rules-editor"
+                  bind:value={rulesDraft}
+                  placeholder="# Rules\n\n- Be nice\n- Submit replays by Tuesday\n"
+                />
+                <div class="muted" style="margin-top: 8px; font-size: .9rem;">
+                  Preview
+                </div>
+                <div class="rules-md" style="margin-top: 8px;">{@html renderMarkdown(rulesDraft)}</div>
+              {:else}
+                <div class="rules-md">{@html renderMarkdown(rulesMd)}</div>
+              {/if}
             </div>
           </div>
 
@@ -1229,7 +1492,7 @@
                           <div class="stat">
                             <div class="k">Record</div>
                             <div class="v">
-                              {teamDetails[t.id].summary.wins}-{teamDetails[t.id].summary.losses}
+                              {getTeamSummary(t).wins}-{getTeamSummary(t).losses}
                             </div>
                           </div>
 
@@ -1249,7 +1512,9 @@
                         <div class="summary-strip">
                           <div class="stat">
                             <div class="k">Record</div>
-                            <div class="v">{t.season_wins ?? 0}-{t.season_losses ?? 0}</div>
+                            <div class="v">
+                              {getTeamSummary(t).wins}-{getTeamSummary(t).losses}
+                            </div>
                           </div>
 
                           <div class="stat">
@@ -1336,9 +1601,11 @@
                                         ? 'win'
                                         : m.result === 'L'
                                           ? 'loss'
-                                          : m.result === 'T'
-                                            ? 'tie'
-                                            : 'none'}"
+                                          : m.result === 'DL'
+                                            ? 'doubleloss'
+                                            : m.result === 'T'
+                                              ? 'tie'
+                                              : 'none'}"
                                     >
                                       {m.result}
                                     </div>
@@ -1609,6 +1876,84 @@
     align-items: baseline;
   }
 
+  /* ---------- Overview: side-by-side cards ---------- */
+  .overview-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  @media (min-width: 980px) {
+    .overview-grid {
+      grid-template-columns: 1fr 1fr;
+      align-items: start;
+    }
+  }
+
+  .rules-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .rules-editor {
+    width: 100%;
+    min-height: 240px;
+    resize: vertical;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.18);
+    color: rgba(255, 255, 255, 0.92);
+    padding: 0.75rem;
+    outline: none;
+    font: inherit;
+    line-height: 1.35;
+  }
+  .rules-editor:focus {
+    border-color: rgba(255, 107, 107, 0.35);
+    box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.12);
+  }
+
+  .rules-md {
+    font-size: 0.98rem;
+    line-height: 1.45;
+  }
+  .rules-md :global(h2),
+  .rules-md :global(h3),
+  .rules-md :global(h4) {
+    margin: 0.6rem 0 0.35rem;
+    font-weight: 900;
+  }
+  .rules-md :global(p) {
+    margin: 0.4rem 0;
+  }
+  .rules-md :global(ul) {
+    margin: 0.4rem 0 0.6rem;
+    padding-left: 1.15rem;
+  }
+  .rules-md :global(li) {
+    margin: 0.15rem 0;
+  }
+  .rules-md :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.95em;
+    padding: 0.15rem 0.35rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.22);
+  }
+  .rules-md :global(a) {
+    color: #7dd3fc;
+    text-decoration: none;
+  }
+  .rules-md :global(a:hover) {
+    text-decoration: underline;
+  }
+  .md-spacer {
+    height: 0.45rem;
+  }
+
   /* ---------- CoachProfile-style accordion + panels ---------- */
   .season-list {
     display: flex;
@@ -1830,6 +2175,11 @@
   .result.tie {
     border-color: rgba(241, 196, 15, 0.35);
     background: rgba(241, 196, 15, 0.12);
+  }
+  .result.doubleloss {
+    border-color: rgba(255, 107, 107, 0.5);
+    background: rgba(255, 107, 107, 0.12);
+    color: #ffd6d6;
   }
 
   /* ---- transactions ---- */
