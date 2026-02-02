@@ -15,11 +15,24 @@
   $: showConference = (teams ?? []).some((t) => hasNonEmpty(t.conference));
   $: showDivision   = (teams ?? []).some((t) => hasNonEmpty(t.division));
 
-  // 2) Build a Set of *postseason* match_ids (playoffs + playins) to EXCLUDE from diff/kills calc
+  // Truthiness helper because the API/db might return 0/1, "true"/"false", or actual booleans
+  function truthyFlag(v) {
+    if (v === true) return true;
+    if (v === false) return false;
+    if (v == null) return false;
+    if (typeof v === "number") return v !== 0;
+    const s = String(v).trim().toLowerCase();
+    if (s === "true" || s === "t" || s === "1" || s === "yes" || s === "y") return true;
+    if (s === "false" || s === "f" || s === "0" || s === "no" || s === "n" || s === "") return false;
+    // fallback: JS truthiness
+    return !!v;
+  }
+
+  // 2) Build a Set of *postseason* match_ids (playoffs + playins) to EXCLUDE from ALL regular-season calcs
   $: excludedMatchIds = new Set(
     (matches ?? [])
-      .filter((m) => m.is_playoff || m.is_playins)
-      .map((m) => m.id)
+      .filter((m) => truthyFlag(m.is_playoff) || truthyFlag(m.is_playins))
+      .map((m) => Number(m.id))
   );
 
   // Helper: does this season actually have any matchGames rows?
@@ -46,14 +59,6 @@
     const b = parseInt(h.slice(4, 6), 16);
     if (![r, g, b].every((n) => Number.isFinite(n))) return null;
     return { r, g, b };
-  }
-
-  function mixRgb(a, b, t) {
-    return {
-      r: Math.round(a.r * (1 - t) + b.r * t),
-      g: Math.round(a.g * (1 - t) + b.g * t),
-      b: Math.round(a.b * (1 - t) + b.b * t)
-    };
   }
 
   function rgbToHex(rgb) {
@@ -89,9 +94,9 @@
   let winsMap = {};
   let lossesMap = {};
 
-  // 3) Compute running differential AND kills for each team (regular season only)
-  //    - If we have matchGames → use per-game logic (Bo3)
-  //    - If we don't → fall back to the matches table (Bo1)
+  // 3) Compute regular-season W/L from *matches only* (NOT per-game).
+  //    - Differential is also computed from the match result totals (team1_score/team2_score).
+  //    - Kills can still use matchGames when present (but still excludes postseason).
   $: {
     const diff = {};
     const kills = {};
@@ -106,112 +111,99 @@
       losses[team.id] = 0;
     }
 
-    // Set of double-loss matches
-    const doubleLossMatchIds = new Set(
-      (matches ?? [])
-        .filter((m) => m.is_double_loss)
-        .map((m) => m.id)
-    );
+    const teamIdByName = new Map((teams ?? []).map((t) => [t.team_name, t.id]));
 
-    function bumpResult(t1id, t2id, s1, s2, isDL) {
-      if (t1id == null || t2id == null) return;
+    // ---- W/L + Diff from MATCHES (regular season only) ----
+    for (const m of matches ?? []) {
+      if (excludedMatchIds.has(Number(m.id))) continue;
+
+      const t1id = teamIdByName.get(m.team1_name);
+      const t2id = teamIdByName.get(m.team2_name);
+      if (t1id == null || t2id == null) continue;
+
+      const isDL = truthyFlag(m.is_double_loss);
 
       if (isDL) {
-        // ✅ double loss: both teams take a loss
         losses[t1id] += 1;
         losses[t2id] += 1;
-        return;
+        // double loss diff: both teams lose by opponent's score
+        const s1 = Number(m.team1_score ?? 0);
+        const s2 = Number(m.team2_score ?? 0);
+        if (Number.isFinite(s1) && Number.isFinite(s2)) {
+          diff[t1id] -= s2;
+          diff[t2id] -= s1;
+        }
+        continue;
       }
 
-      const a = Number(s1);
-      const b = Number(s2);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      // Prefer winner_team_name if present; otherwise compare scores
+      const winner = m.winner_team_name ?? null;
+      const s1 = Number(m.team1_score ?? 0);
+      const s2 = Number(m.team2_score ?? 0);
 
-      if (a > b) {
+      if (winner && winner === m.team1_name) {
         wins[t1id] += 1;
         losses[t2id] += 1;
-      } else if (b > a) {
+        diff[t1id] += s1;
+        diff[t2id] -= s1;
+      } else if (winner && winner === m.team2_name) {
         wins[t2id] += 1;
         losses[t1id] += 1;
-      } else {
-        // ties: ignore for now (no W/L)
+        diff[t2id] += s2;
+        diff[t1id] -= s2;
+      } else if (Number.isFinite(s1) && Number.isFinite(s2)) {
+        if (s1 > s2) {
+          wins[t1id] += 1;
+          losses[t2id] += 1;
+          diff[t1id] += s1;
+          diff[t2id] -= s1;
+        } else if (s2 > s1) {
+          wins[t2id] += 1;
+          losses[t1id] += 1;
+          diff[t2id] += s2;
+          diff[t1id] -= s2;
+        } else {
+          // tie: ignore for now (no W/L, no diff)
+        }
       }
     }
 
-
+    // ---- Kills: use matchGames when present, else approximate from matches ----
     if (hasMatchGames) {
-      // ---- CASE A: Use matchGames (per-game differential & kills) ----
+      // For each GAME row, apply the same kill formula you already had,
+      // but never include postseason games.
       for (const g of matchGames ?? []) {
-        // ignore postseason games (playoffs + playins)
-        if (excludedMatchIds.has(g.match_id)) continue;
+        if (excludedMatchIds.has(Number(g.match_id))) continue;
 
-        // find the match so we know which team was team1 / team2
-        const match = (matches ?? []).find((m) => m.id === g.match_id);
+        const match = (matches ?? []).find((m) => Number(m.id) === Number(g.match_id));
         if (!match) continue;
 
-        const t1 = (teams ?? []).find((t) => t.team_name === match.team1_name);
-        const t2 = (teams ?? []).find((t) => t.team_name === match.team2_name);
-        if (!t1 || !t2) continue;
+        const t1id = teamIdByName.get(match.team1_name);
+        const t2id = teamIdByName.get(match.team2_name);
+        if (t1id == null || t2id == null) continue;
 
-        const s1 = g.team1_score ?? 0;
-        const s2 = g.team2_score ?? 0;
-
-        bumpResult(t1.id, t2.id, s1, s2, doubleLossMatchIds.has(g.match_id));
-
-        if (doubleLossMatchIds.has(g.match_id)) {
-          // Double loss: both teams "lose" by opponent's score; no one gains
-          diff[t1.id] -= s2;
-          diff[t2.id] -= s1;
-        } else {
-          // Normal per-game differential: winner gains, loser loses winner's score
-          if (s1 > s2) {
-            diff[t1.id] += s1;
-            diff[t2.id] -= s1;
-          } else if (s2 > s1) {
-            diff[t2.id] += s2;
-            diff[t1.id] -= s2;
-          }
-          // ties: no diff change
-        }
+        const s1 = Number(g.team1_score ?? 0);
+        const s2 = Number(g.team2_score ?? 0);
 
         // Kills (Bo3): each team gets (4 - opponent_score)
-        kills[t1.id] += (4 - s2);
-        kills[t2.id] += (4 - s1);
+        kills[t1id] += (4 - s2);
+        kills[t2id] += (4 - s1);
       }
     } else {
-      // ---- CASE B: No matchGames → use matches table directly (Bo1) ----
+      // Fallback: Bo1-style kill estimate from match totals
       for (const m of matches ?? []) {
-        // ignore postseason (playoffs + playins)
-        if (excludedMatchIds.has(m.id)) continue;
+        if (excludedMatchIds.has(Number(m.id))) continue;
 
-        const t1 = (teams ?? []).find((t) => t.team_name === m.team1_name);
-        const t2 = (teams ?? []).find((t) => t.team_name === m.team2_name);
-        if (!t1 || !t2) continue;
+        const t1id = teamIdByName.get(m.team1_name);
+        const t2id = teamIdByName.get(m.team2_name);
+        if (t1id == null || t2id == null) continue;
 
-        const s1 = m.team1_score ?? 0;
-        const s2 = m.team2_score ?? 0;
-
-        bumpResult(t1.id, t2.id, s1, s2, !!m.is_double_loss);
-
-        if (m.is_double_loss) {
-          // Double loss: each team loses by the opponent's score
-          diff[t1.id] -= s2;
-          diff[t2.id] -= s1;
-        } else {
-          // Normal Bo1 differential: winner gains, loser loses winner's score
-          if (s1 > s2) {
-            diff[t1.id] += s1;
-            diff[t2.id] -= s1;
-          } else if (s2 > s1) {
-            diff[t2.id] += s2;
-            diff[t1.id] -= s2;
-          }
-          // ties: no change
-        }
+        const s1 = Number(m.team1_score ?? 0);
+        const s2 = Number(m.team2_score ?? 0);
 
         // Kills (Bo1): each team gets (6 - opponent_score)
-        kills[t1.id] += (6 - s2);
-        kills[t2.id] += (6 - s1);
+        kills[t1id] += (6 - s2);
+        kills[t2id] += (6 - s1);
       }
     }
 

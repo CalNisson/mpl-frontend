@@ -69,17 +69,8 @@ async function runElo(reset = true) {
   eloMsg = "";
   eloErr = "";
   try {
-    const res = await recomputeLeagueElo(leagueId, reset);
-    const n = Number(res?.processed_matches ?? res?.processed ?? 0);
-    if (Number.isFinite(n)) {
-      eloMsg = (reset ? "ELO recomputed from scratch" : "ELO recompute catch-up") +
-        ` (processed ${n} match${n === 1 ? "" : "es"}).`;
-      if (n === 0) {
-        eloMsg += " Nothing to process — check that matches have winners and that ELO state is reset/correct.";
-      }
-    } else {
-      eloMsg = reset ? "ELO recomputed from scratch." : "ELO recompute catch-up complete.";
-    }
+    await recomputeLeagueElo(leagueId, reset);
+    eloMsg = reset ? "ELO recomputed from scratch." : "ELO recompute catch-up complete.";
   } catch (e) {
     eloErr = "Failed to recompute ELO.";
     console.error(e);
