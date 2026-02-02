@@ -190,6 +190,18 @@
   let leagueMe = null;
   let loadingMe = false;
   let loadingLeagueMe = false;
+  let lastRulesLeagueId = null;
+
+  $: {
+    const lid = ctx?.league?.id ?? null;
+
+    // only refresh rules when the league actually changes
+    // and don't blow away the draft while user is editing
+    if (lid && lid !== lastRulesLeagueId && !editingRules) {
+      lastRulesLeagueId = lid;
+      loadLeagueRules();
+    }
+  }
 
   $: globalRoles = me?.roles ?? [];
   $: isAdmin = globalRoles.includes("admin");

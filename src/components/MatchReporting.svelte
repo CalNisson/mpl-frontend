@@ -39,6 +39,19 @@ let loading = true;
   let readyToUpload = false;
   let showOverride = false;
 
+  // reporting mode
+  // - replay: requires an analyzed replay (normal path)
+  // - manual: allows reporting forfeits / admin fixes without a replay (e.g., playoffs matches not in Schedule tab)
+  let mode = "replay";
+
+  // manual (forfeit) fields
+  let mfWinnerId = "";
+  let mfTeam1Score = "";
+  let mfTeam2Score = "";
+  let mfBestOf = ""; // "", 3, 5 (used for default score suggestion)
+  let mfReplay = "FORFEIT";
+  let mfAutoScore = true;
+
   // override fields
   let ovTeam1Id = "";
   let ovTeam2Id = "";
@@ -60,6 +73,18 @@ let loading = true;
 
   function setErr(e) {
     error = e?.message ?? String(e);
+  }
+
+  function neededWins(bestOf) {
+    const bo = Number(bestOf);
+    if (!Number.isFinite(bo) || bo <= 1) return 1;
+    return Math.floor(bo / 2) + 1;
+  }
+
+  function getMatchById(id) {
+    const mid = Number(id);
+    if (!mid) return null;
+    return (matches ?? []).find((x) => Number(x.id) === mid) ?? null;
   }
 
   function normName(s) {
@@ -568,6 +593,39 @@ function getWeeks() {
   $: if (analysis && selectedGroup && selectedMatchId) {
     computeMapping();
   }
+  // If there is no analysis loaded, force Manual mode
+  $: if (!analysis && mode === "replay") {
+    mode = "manual";
+  }
+
+  // Manual mode: default winner + score suggestion for forfeits
+  $: if (mode === "manual" && selectedMatchId) {
+    const m = getMatchById(selectedMatchId);
+    if (m) {
+      const bo = Number(m.best_of) || (mfBestOf ? Number(mfBestOf) : 0) || 3;
+      if (!mfBestOf) mfBestOf = String(bo);
+
+      // Default winner to Team 1 if not selected
+      if (!mfWinnerId) mfWinnerId = String(m.team1_id ?? "");
+
+      // Auto-suggest series score if enabled
+      if (mfAutoScore) {
+        const bestOf = Number(mfBestOf || bo) || 3;
+        const need = (bestOf === 1) ? 3 : neededWins(bestOf);
+        const team1_id = Number(m.team1_id);
+        const team2_id = Number(m.team2_id);
+        const w = Number(mfWinnerId);
+        if (w === team1_id) {
+          mfTeam1Score = String(need);
+          mfTeam2Score = "0";
+        } else if (w === team2_id) {
+          mfTeam1Score = "0";
+          mfTeam2Score = String(need);
+        }
+      }
+    }
+  }
+
 
   // ----------------------------
   // NEW: Set validation + series recompute
@@ -714,6 +772,60 @@ function getWeeks() {
     }
   }
 
+  async function onSubmitForfeit() {
+    const matchId = Number(selectedMatchId);
+    if (!matchId) return;
+
+    const m = getMatchById(matchId);
+    if (!m) {
+      error = "Selected match not found.";
+      return;
+    }
+
+    const team1_id = Number(m.team1_id);
+    const team2_id = Number(m.team2_id);
+
+    const winner_id = Number(String(mfWinnerId ?? "").trim());
+    if (!winner_id) {
+      error = "Forfeit requires selecting a winner.";
+      return;
+    }
+    if (winner_id !== team1_id && winner_id !== team2_id) {
+      error = "Forfeit winner must be Team 1 or Team 2.";
+      return;
+    }
+
+    const bo = Number(mfBestOf) || Number(m.best_of) || 3;
+    const need = neededWins(bo);
+
+    const s1raw = String(mfTeam1Score ?? "").trim();
+    const s2raw = String(mfTeam2Score ?? "").trim();
+
+    const team1_score = s1raw === "" ? (winner_id === team1_id ? need : 0) : Number(s1raw);
+    const team2_score = s2raw === "" ? (winner_id === team2_id ? need : 0) : Number(s2raw);
+
+    if (!Number.isFinite(team1_score) || !Number.isFinite(team2_score)) {
+      error = "Scores must be valid numbers.";
+      return;
+    }
+
+    error = "";
+    try {
+      await uploadMatchReport(matchId, {
+        replay: (mfReplay ?? "FORFEIT").trim() || "FORFEIT",
+        team1_score,
+        team2_score,
+        winner_id,
+        is_double_loss: false,
+        pokemon_stats: [],
+        force_overwrite: !!overwrite,
+      });
+      await load();
+    } catch (e) {
+      setErr(e);
+    }
+  }
+
   function summarizeTeam(team_id) {
     const useOverride = !!showOverride;
 
@@ -776,9 +888,25 @@ function getWeeks() {
           <div class="error">{error}</div>
         {/if}
 
-        {#if !analysis}
-          <div class="muted">Analyze a replay to begin.</div>
-        {:else}
+                <div class="mode-row">
+          <button
+            class="tab"
+            class:active={mode === "replay"}
+            on:click={() => (mode = "replay")}
+            disabled={!analysis}
+            title={!analysis ? "Analyze a replay to enable replay reporting." : ""}
+          >
+            Replay
+          </button>
+          <button class="tab" class:active={mode === "manual"} on:click={() => (mode = "manual")}>
+            Manual / Forfeit
+          </button>
+        </div>
+
+        {#if mode === "replay"}
+          {#if !analysis}
+            <div class="muted">Analyze a replay to begin.</div>
+          {:else}
           <div class="block">
             <div class="muted">Replay:</div>
             <div class="mono">{analysis.replayUrl}</div>
@@ -977,6 +1105,104 @@ function getWeeks() {
               {/if}
             {/if}
           {/if}
+          {/if}
+        {:else}
+          <div class="row">
+            <label class="field">
+              <span class="lab">Round</span>
+              <select class="select" bind:value={selectedGroup}>
+                <option value="">Select round…</option>
+                {#each getGroups() as g}
+                  <option value={g}>{groupLabelFromKey(g)}</option>
+                {/each}
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="lab">Match</span>
+              <select class="select" bind:value={selectedMatchId} disabled={!selectedGroup}>
+                <option value="">Select match…</option>
+                {#each matchesForGroup(selectedGroup) as m (m.id)}
+                  <option value={m.id}>
+                    {m.team1_name} vs {m.team2_name} (#{m.id})
+                  </option>
+                {/each}
+              </select>
+            </label>
+          </div>
+
+          {#if selectedMatchId}
+            {@const mm = getMatchById(selectedMatchId)}
+            {#if mm}
+              <div class="block">
+                <div class="muted">Reporting a forfeit:</div>
+                <div>
+                  <b>{mm.team1_name}</b> vs <b>{mm.team2_name}</b>
+                  <span class="muted">(#{mm.id}, {roundLabel(mm)})</span>
+                </div>
+              </div>
+
+              <div class="row">
+                <label class="field">
+                  <span class="lab">Winner</span>
+                  <select class="select" bind:value={mfWinnerId}>
+                    <option value="">Select winner…</option>
+                    <option value={mm.team1_id}>{mm.team1_name}</option>
+                    <option value={mm.team2_id}>{mm.team2_name}</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span class="lab">Best of</span>
+                  <select class="select" bind:value={mfBestOf}>
+                    <option value="1">1</option>
+                    <option value="3">3</option>
+                    <option value="5">5</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span class="lab">{mm.team1_name} Score</span>
+                  <input
+                    class="score-input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    bind:value={mfTeam1Score}
+                    on:input={() => (mfAutoScore = false)}
+                  />
+                </label>
+
+                <label class="field">
+                  <span class="lab">{mm.team2_name} Score</span>
+                  <input
+                    class="score-input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    bind:value={mfTeam2Score}
+                    on:input={() => (mfAutoScore = false)}
+                  />
+                </label>
+              </div>
+
+              <div class="row">
+                <label class="check">
+                  <input type="checkbox" bind:checked={mfAutoScore} />
+                  Auto-suggest score
+                </label>
+
+                <label class="check">
+                  <input type="checkbox" bind:checked={overwrite} />
+                  Overwrite existing report
+                </label>
+
+                <button class="btn primary" disabled={!mfWinnerId} on:click={onSubmitForfeit}>
+                  Submit Forfeit
+                </button>
+              </div>
+            {/if}
+          {/if}
         {/if}
       {/if}
     </div>
@@ -1090,5 +1316,46 @@ function getWeeks() {
     grid-template-columns: 1fr 90px 90px;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .mode-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .tab {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.9);
+    padding: 0.45rem 0.65rem;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 0.9rem;
+  }
+  .tab:hover { background: rgba(255, 255, 255, 0.07); }
+  .tab:disabled { opacity: 0.5; cursor: not-allowed; }
+  .tab.active {
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.22);
+  }
+  .check {
+    display: inline-flex;
+    gap: 0.5rem;
+    align-items: center;
+    opacity: 0.9;
+    font-size: 0.9rem;
+    user-select: none;
+  }
+  .score-input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(0, 0, 0, 0.25);
+    color: #e8eefc;
+    box-sizing: border-box;
   }
 </style>
