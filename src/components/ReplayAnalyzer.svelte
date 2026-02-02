@@ -353,7 +353,7 @@
                           let faintOwnKill = this.checkOwnKill(faintAttacker, faintMon);
                           killString.attacker = faintAttacker;
                           // NOTE: leaving this exact assignment for parity with your file.
-                          if ((faintOwnKill === "opp")) {
+                          if (faintOwnKill === "opp") {
                             faintAttacker.kills[0]++;
                           }
                         } else {
@@ -738,24 +738,34 @@
             );
             break;
 
+          // ✅ FIXED: correctly attribute volatile statuses (like Salt Cure) to the move user
           case "-start": {
-            let startMon = this.getMonByString(line.data[1]);
-            if (startMon) {
-              if (line.parent) {
-                let startMonTarget = void 0;
-                if (line.parent.data[0] === "move") {
-                  startMonTarget = this.getMonByString(line.parent.data[3]);
-                } else {
-                  startMonTarget = startMon;
-                }
-                if (startMonTarget) {
-                  startMonTarget.statuses.push({
-                    status: line.data[2],
-                    setter: startMon,
-                  });
-                }
+            const affectedMon = this.getMonByString(line.data[1]);
+            if (!affectedMon) break;
+
+            // Who receives the status?
+            let statusTarget = affectedMon;
+            // Who applied/caused the status?
+            let setterMon = affectedMon;
+
+            if (line.parent) {
+              if (line.parent.data[0] === "move") {
+                const moveUser = this.getMonByString(line.parent.data[1]);
+                const moveTarget = this.getMonByString(line.parent.data[3]);
+                if (moveTarget) statusTarget = moveTarget;
+                if (moveUser) setterMon = moveUser;
+              } else {
+                statusTarget = affectedMon;
+                setterMon = affectedMon;
               }
             }
+
+            statusTarget.statuses.push({
+              status: line.data[2],
+              setter: setterMon,
+              name: line.data[2].split(": ").at(-1),
+            });
+
             break;
           }
 
@@ -966,7 +976,8 @@
             let damageIndirect = this.searchStatuses(target, from);
             if (damageIndirect) {
               lastDamage.status = damageIndirect;
-              lastDamage.from = damageIndirect.name;
+              // ✅ small hardening: always have a usable reason string
+              lastDamage.from = damageIndirect.name || damageIndirect.status || from;
               if (damageIndirect.setter) {
                 if (target != damageIndirect.setter) {
                   damageIndirect.setter.damageDealt[1] += hppDiff;
@@ -1499,12 +1510,7 @@
       p2Label = p2.username || "Player 2";
 
       // build team cards + tables in parallel
-      const [tA, tB, r1, r2] = await Promise.all([
-        buildTeamCard(p1),
-        buildTeamCard(p2),
-        buildMonRows(p1),
-        buildMonRows(p2),
-      ]);
+      const [tA, tB, r1, r2] = await Promise.all([buildTeamCard(p1), buildTeamCard(p2), buildMonRows(p1), buildMonRows(p2)]);
 
       teamA = tA;
       teamB = tB;

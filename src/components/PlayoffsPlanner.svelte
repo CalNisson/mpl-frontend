@@ -293,7 +293,9 @@
     playinsAdvance: 2,
     seeding: "standings", // league|conference|division (kept for legacy; UI uses league/conference/division)
     bracketType: "standard", // standard|weighted_byes
-    includeThirdPlace: false
+    // If enabled, the generated playoffs bracket will include a 3rd-place match
+    // in the final column (Loser of Semifinal 1 vs Loser of Semifinal 2).
+    includeThirdPlace: true
   };
 
   let settings = { ...DEFAULTS };
@@ -1110,6 +1112,56 @@
     return rounds;
   }
 
+  // Add a 3rd-place match (semifinal losers) into the final column.
+  // This is a pure preview/publish structure item: it intentionally does NOT
+  // wire links, since it depends on LOSERS (and the published wiring only
+  // supports winner advancement).
+  function ensureThirdPlaceMatch(playoffsRounds) {
+    if (!Array.isArray(playoffsRounds) || playoffsRounds.length < 2) return;
+
+    // Avoid duplicates (e.g. toggling settings / rebuild).
+    for (const r of playoffsRounds) {
+      if ((r?.matches ?? []).some((m) => String(m?.label ?? "").toLowerCase().includes("third"))) {
+        return;
+      }
+    }
+
+    const semiIdx = playoffsRounds.findIndex((r) => String(r?.name ?? "").toLowerCase().includes("semi"));
+    if (semiIdx < 0) return;
+    const semis = playoffsRounds[semiIdx]?.matches ?? [];
+    if (semis.length < 2) return;
+
+    // Put it in the last round (final column).
+    const finalRound = playoffsRounds[playoffsRounds.length - 1];
+    if (!finalRound || !Array.isArray(finalRound.matches)) return;
+
+    const id = `P-THIRD:${semis[0]?.id ?? "a"}:${semis[1]?.id ?? "b"}`;
+
+    finalRound.matches.push({
+      id,
+      phase: "playoffs",
+      roundIndex: finalRound.index,
+      slotIndex: finalRound.matches.length,
+      label: "Third Place",
+      players: [
+        {
+          id: `L:${semis[0]?.id ?? "semi1"}`,
+          teamId: null,
+          name: `Loser (${semis[0]?.label ?? "Semifinal 1"})`,
+          score: ""
+        },
+        {
+          id: `L:${semis[1]?.id ?? "semi2"}`,
+          teamId: null,
+          name: `Loser (${semis[1]?.label ?? "Semifinal 2"})`,
+          score: ""
+        }
+      ],
+      nextMatchId: null,
+      nextSlot: null
+    });
+  }
+
   function buildPlayins(playinTeams) {
     const n = playinTeams.length;
     const size = nextPow2(n);
@@ -1246,6 +1298,11 @@
       }
 
       wirePlayinsIntoPlayoffs(playinsRounds, playoffsRounds, pa);
+    }
+
+    // Optional: include a 3rd-place match (semifinal losers)
+    if (settings.includeThirdPlace) {
+      ensureThirdPlaceMatch(playoffsRounds);
     }
 
     preview = { seededAll, qualified, playoffsRounds, playinsRounds };
@@ -1392,6 +1449,21 @@
   $: teamById = new Map((teams ?? []).map((t) => [t.id, t]));
 
   // ----------------------------
+  // Winner indicator helper
+  // ----------------------------
+  function winnerIndexForMatch(match) {
+    if (!match?.players || match.players.length < 2) return -1;
+
+    const a = Number(match.players[0]?.score ?? "");
+    const b = Number(match.players[1]?.score ?? "");
+
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return -1;
+    if (a === b) return -1;
+
+    return a > b ? 0 : 1;
+  }
+
+  // ----------------------------
   // Bracket renderer helpers
   // ----------------------------
   const MATCH_WIDTH = 260;
@@ -1406,13 +1478,22 @@
     const positions = {};
     if (!rounds?.length) return positions;
 
-    const all = rounds.flatMap((r) => r.matches ?? []);
-    const byId = new Map(all.map((m) => [m.id, m]));
+    // Tag third-place matches
+    const all = rounds.flatMap((r) => r.matches ?? []).map((m) => ({
+      ...m,
+      _isThirdPlace: String(m?.label ?? "").toLowerCase().includes("third")
+    }));
+
+    // Layout ONLY the main bracket; third-place is positioned afterwards
+    const main = all.filter((m) => !m._isThirdPlace);
+    const third = all.filter((m) => m._isThirdPlace);
+
+    const byId = new Map(main.map((m) => [m.id, m]));
 
     const childrenByParentId = new Map();
     const childIds = new Set();
 
-    for (const m of all) {
+    for (const m of main) {
       if (!m.nextMatchId) continue;
       if (!byId.has(m.nextMatchId)) continue;
 
@@ -1422,12 +1503,12 @@
       childIds.add(m.id);
     }
 
-    const roots = all.filter((m) => !childIds.has(m.id));
+    const roots = main.filter((m) => !childIds.has(m.id));
 
     const step = MATCH_HEIGHT_EST + MATCH_GAP_Y;
     let nextLeafIndex = 0;
 
-    // ✅ FIX: cycle guard to prevent infinite recursion if links are bad / cyclic
+    // ✅ cycle guard
     const visiting = new Set();
 
     function assignY(match) {
@@ -1435,7 +1516,6 @@
       if (existing && typeof existing.y === "number") return existing.y;
 
       if (visiting.has(match.id)) {
-        // break cycles safely
         const y = TOP_MARGIN + MATCH_HEIGHT_EST / 2 + nextLeafIndex * step;
         positions[match.id] = positions[match.id] || {};
         positions[match.id].y = y;
@@ -1470,13 +1550,58 @@
       });
     } else {
       // if everything is part of a cycle, just assign in order
-      all.forEach((m) => assignY(m));
+      main.forEach((m) => assignY(m));
     }
 
-    for (const m of all) {
+    // Assign x/y for main matches
+    for (const m of main) {
       const x = LEFT_MARGIN + (m.roundIndex ?? 0) * ROUND_GAP_X + MATCH_WIDTH / 2;
       const y = positions[m.id]?.y ?? TOP_MARGIN + MATCH_HEIGHT_EST / 2;
       positions[m.id] = { x, y };
+    }
+
+    // ---- Place Third Place matches close to Finals ----
+    if (third.length) {
+      // Determine last round index in the rendered rounds
+      const lastRoundIndex = Math.max(
+        ...rounds.map((r) => Number(r?.index ?? r?.roundIndex ?? 0)).filter((n) => Number.isFinite(n))
+      );
+
+      // Finals-like match to anchor under (prefer label includes "final")
+      const finalsCandidate = main
+        .filter((m) => Number(m.roundIndex ?? 0) === lastRoundIndex)
+        .find((m) => String(m.label ?? "").toLowerCase().includes("final"));
+
+      let anchorY = null;
+
+      if (finalsCandidate && positions[finalsCandidate.id]) {
+        anchorY = positions[finalsCandidate.id].y;
+      } else {
+        // fallback: lowest match in last column
+        const ys = main
+          .filter((m) => Number(m.roundIndex ?? 0) === lastRoundIndex)
+          .map((m) => positions[m.id]?.y)
+          .filter((y) => typeof y === "number");
+        if (ys.length) anchorY = Math.max(...ys);
+      }
+
+      // If we still couldn't find an anchor, just stick them after the bracket
+      if (anchorY == null) {
+        const ysAll = Object.values(positions).map((p) => p.y);
+        anchorY = ysAll.length ? Math.max(...ysAll) : TOP_MARGIN + MATCH_HEIGHT_EST / 2;
+      }
+
+      const baseY = anchorY + MATCH_HEIGHT_EST + MATCH_GAP_Y; // ✅ tight under finals
+
+      // Place third-place matches under finals, stacked if somehow multiple exist
+      third
+        .slice()
+        .sort((a, b) => Number(a.slotIndex ?? 0) - Number(b.slotIndex ?? 0))
+        .forEach((m, idx) => {
+          const x = LEFT_MARGIN + (m.roundIndex ?? lastRoundIndex) * ROUND_GAP_X + MATCH_WIDTH / 2;
+          const y = baseY + idx * step;
+          positions[m.id] = { x, y };
+        });
     }
 
     return positions;
@@ -1675,6 +1800,19 @@
                   <option value="weighted_byes">Weighted Byes (Preview)</option>
                 </select>
                 <div class="hint muted">Weighted Byes preview uses a simple “staggered entry” ladder-style structure.</div>
+
+                <label class="line" style="margin-top:.5rem;">
+                  <input
+                    type="checkbox"
+                    checked={!!settings.includeThirdPlace}
+                    disabled={!canEdit || structureLocked}
+                    on:change={(e) =>
+                      persistSettings({ ...settings, includeThirdPlace: e.currentTarget.checked })
+                    }
+                  />
+                  <span>Include 3rd-place match</span>
+                </label>
+                <div class="hint muted">Adds a Third Place match (Semifinal losers) in the final column.</div>
               </div>
 
               <div class="field">
@@ -1833,6 +1971,7 @@
 
                   {#each roundsToRender as round (round.index)}
                     {#each round.matches as match (match.id)}
+                      {@const wIdx = winnerIndexForMatch(match)}
                       <div class="match-box" style={styleForMatch(match, matchPositions)}>
                         <div class="match-header">
                           <span class="match-label">{match.label}</span>
@@ -1842,12 +1981,18 @@
                         </div>
 
                         <div class="players">
-                          {#each match.players as p (p.id)}
+                          {#each match.players as p, idx (p.id)}
                             <div
-                              class="player-row"
+                              class="player-row {wIdx === idx ? 'winner' : ''}"
                               style={p.teamId ? teamPillStyle(teamById.get(p.teamId)) : ""}
+                              title={wIdx === idx ? "Winner" : ""}
                             >
-                              <span class="player-name">{p.name}</span>
+                              <span class="player-name">
+                                {p.name}
+                                {#if wIdx === idx}
+                                  <span class="winner-mark" aria-label="Winner">✓</span>
+                                {/if}
+                              </span>
                               <span class="player-score">{p.score}</span>
                             </div>
                           {/each}
@@ -1894,6 +2039,7 @@
 
               {#each roundsToRender as round (round.index)}
                 {#each round.matches as match (match.id)}
+                  {@const wIdx = winnerIndexForMatch(match)}
                   <div class="match-box" style={styleForMatch(match, matchPositions)}>
                     <div class="match-header">
                       <span class="match-label">{match.label}</span>
@@ -1901,9 +2047,18 @@
                     </div>
 
                     <div class="players">
-                      {#each match.players as p (p.id)}
-                        <div class="player-row" style={p.teamId ? teamPillStyle(teamById.get(p.teamId)) : ""}>
-                          <span class="player-name">{p.name}</span>
+                      {#each match.players as p, idx (p.id)}
+                        <div
+                          class="player-row {wIdx === idx ? 'winner' : ''}"
+                          style={p.teamId ? teamPillStyle(teamById.get(p.teamId)) : ""}
+                          title={wIdx === idx ? "Winner" : ""}
+                        >
+                          <span class="player-name">
+                            {p.name}
+                            {#if wIdx === idx}
+                              <span class="winner-mark" aria-label="Winner">✓</span>
+                            {/if}
+                          </span>
                           <span class="player-score">{p.score}</span>
                         </div>
                       {/each}
@@ -2143,6 +2298,7 @@
     flex-direction: column;
     gap: 0.2rem;
     min-height: 90px;
+    height: auto; 
   }
 
   .match-header {
@@ -2162,20 +2318,36 @@
   }
 
   .player-row {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: center;
+    gap: 10px;
     font-size: 0.85rem;
     padding: 0.15rem 0.25rem;
     border-radius: 0.4rem;
     border-left: 3px solid transparent;
   }
 
+  /* ✅ Winner indicator (subtle) */
+  .player-row.winner {
+    outline: 1px solid rgba(255, 255, 255, 0.22);
+    box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.06);
+  }
+
+  .winner-mark {
+    margin-left: 8px;
+    font-size: 0.8rem;
+    font-weight: 900;
+    opacity: 0.9;
+  }
+
   .player-name {
-    white-space: nowrap;
-    overflow: visible;
-    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere; 
+    word-break: break-word;
     font-weight: 800;
+    line-height: 1.15;
+    min-width: 0;
   }
 
   .round-label {
@@ -2189,8 +2361,10 @@
   }
 
   .player-score {
-    margin-left: 10px;
+    margin-left: 0;
     font-weight: 900;
     opacity: 0.9;
+    justify-self: end;
+    white-space: nowrap;
   }
 </style>
