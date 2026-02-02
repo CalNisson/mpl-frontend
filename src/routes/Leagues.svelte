@@ -11,7 +11,8 @@
     getCoaches,
     getSeasonTeams,
     getPlayoffsStatus,
-    updateLeagueRules
+    updateLeagueRules,
+    recomputeLeagueElo
   } from "../lib/api.js";
 
   import StandingsTable from "../components/StandingsTable.svelte";
@@ -215,6 +216,42 @@
   function resetMessages() {
     error = "";
     success = "";
+  }
+
+  // ----------------------------
+  // Maintenance: ELO recompute
+  // ----------------------------
+  let eloRunning = false;
+  let eloMsg = "";
+  let eloErr = "";
+  let eloReset = true; // recompute from scratch by default
+
+  async function runEloRecompute() {
+    eloMsg = "";
+    eloErr = "";
+    if (!isLeagueMaster) {
+      eloErr = "Only the league master can recompute ELO.";
+      return;
+    }
+    const lid = ctx?.league?.id ?? null;
+    if (!lid) {
+      eloErr = "No league selected.";
+      return;
+    }
+
+    eloRunning = true;
+    try {
+      const res = await recomputeLeagueElo(lid, eloReset);
+      const n = Number(res?.processed_matches ?? 0);
+      eloMsg = `ELO recomputed. Processed ${n} match${n === 1 ? "" : "es"}.`;
+
+      // Refresh coaches list (HOF/Coaches tab) so the UI updates immediately
+      await loadCoachesList();
+    } catch (e) {
+      eloErr = (e?.message ?? "Failed to recompute ELO").toString();
+    } finally {
+      eloRunning = false;
+    }
   }
 
   async function loadMe() {
@@ -1407,6 +1444,36 @@
                 <div class="rules-md">{@html renderMarkdown(rulesMd)}</div>
               {/if}
             </div>
+
+            {#if isLeagueMaster}
+              <div class="card">
+                <div class="card-header">
+                  <div class="card-title">Maintenance</div>
+                </div>
+
+                <div class="muted" style="margin-bottom: .5rem;">
+                  Recompute coach ELO for this league. Use this if ELO looks stale or incorrect.
+                </div>
+
+                <label class="checkbox-row" style="margin-bottom: .75rem;">
+                  <input type="checkbox" bind:checked={eloReset} />
+                  <span>Reset to baseline (1000) and recompute from scratch</span>
+                </label>
+
+                <div class="rules-actions" style="justify-content:flex-start;">
+                  <button class="btn" disabled={eloRunning} on:click={runEloRecompute}>
+                    {eloRunning ? "Recomputing…" : "Recompute ELO"}
+                  </button>
+                </div>
+
+                {#if eloErr}
+                  <div class="error" style="margin-top: .5rem;">{eloErr}</div>
+                {/if}
+                {#if eloMsg}
+                  <div class="success" style="margin-top: .5rem;">{eloMsg}</div>
+                {/if}
+              </div>
+            {/if}
           </div>
 
         {:else if tab === "Leaderboard"}

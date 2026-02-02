@@ -4,14 +4,23 @@
   export let seasonTeams = []; // colors live here
 
   // ----- Sorting: Diff → Kills → lowest GP -----
+  // ----- Sorting: Diff → Kills → lowest GP → alphabetical name -----
   $: sorted = [...(stats ?? [])]
     .filter((p) => p != null)
     .sort((a, b) => {
       if (a.differential !== b.differential) return b.differential - a.differential;
       if (a.kills !== b.kills) return b.kills - a.kills;
-      return a.games_played - b.games_played;
+
+      // fewer games played is better (efficiency)
+      if (a.games_played !== b.games_played) return a.games_played - b.games_played;
+
+      // final deterministic tie-break: alphabetical Pokémon name
+      const an = (a.pokemon_name ?? "").toLowerCase();
+      const bn = (b.pokemon_name ?? "").toLowerCase();
+      return an.localeCompare(bn);
     })
     .slice(0, 10);
+
 
   // ----- Sprite helpers -----
   let spriteCache = {}; // { [pokemon_name]: url }

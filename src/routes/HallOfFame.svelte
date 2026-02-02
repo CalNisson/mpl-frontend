@@ -1,7 +1,7 @@
 <script>
   import { onMount, afterUpdate } from "svelte";
   import { leagueContext } from "../lib/leagueStore.js";
-  import { getSeasons, getSeasonDashboard, getSeasonBadges } from "../lib/api.js";
+  import { getMe, getLeagueMe, getSeasons, getSeasonDashboard, getSeasonBadges, recomputeLeagueElo } from "../lib/api.js";
 
   import SeasonOverview from "../components/SeasonOverview.svelte";
   import StandingsTable from "../components/StandingsTable.svelte";
@@ -23,6 +23,70 @@
   // ✅ reactive league selection
   $: leagueId = $leagueContext?.league?.id ?? null;
 
+
+// -------------------------
+// Permissions (league_master)
+// -------------------------
+let me = null;
+let leagueMe = null;
+let eloBusy = false;
+let eloMsg = "";
+let eloErr = "";
+
+$: globalRoles = me?.roles ?? [];
+$: isAdmin = globalRoles.includes("admin");
+$: leagueRoles = leagueMe?.league_roles ?? [];
+$: isLeagueMaster = isAdmin || leagueRoles.includes("league_master");
+
+async function loadMe() {
+  try {
+    me = await getMe();
+  } catch {
+    me = null;
+  }
+}
+
+async function loadLeagueMe() {
+  if (!leagueId) {
+    leagueMe = null;
+    return;
+  }
+  try {
+    leagueMe = await getLeagueMe(leagueId);
+  } catch {
+    leagueMe = null;
+  }
+}
+
+async function runElo(reset = true) {
+  if (!leagueId) return;
+  const msg = reset
+    ? "Reset all coach ELO to 1000 and recompute from all matches for this league?"
+    : "Recompute ELO from the current checkpoint (no reset)?";
+  if (typeof window !== "undefined" && !confirm(msg)) return;
+
+  eloBusy = true;
+  eloMsg = "";
+  eloErr = "";
+  try {
+    const res = await recomputeLeagueElo(leagueId, reset);
+    const n = Number(res?.processed_matches ?? res?.processed ?? 0);
+    if (Number.isFinite(n)) {
+      eloMsg = (reset ? "ELO recomputed from scratch" : "ELO recompute catch-up") +
+        ` (processed ${n} match${n === 1 ? "" : "es"}).`;
+      if (n === 0) {
+        eloMsg += " Nothing to process — check that matches have winners and that ELO state is reset/correct.";
+      }
+    } else {
+      eloMsg = reset ? "ELO recomputed from scratch." : "ELO recompute catch-up complete.";
+    }
+  } catch (e) {
+    eloErr = "Failed to recompute ELO.";
+    console.error(e);
+  } finally {
+    eloBusy = false;
+  }
+}
   // -------------------------
   // Tab routing via ?tab=
   // -------------------------
@@ -193,6 +257,8 @@
   })();
 
   onMount(() => {
+    loadMe();
+    loadLeagueMe();
     syncTabFromUrl();
     window.addEventListener("hashchange", syncTabFromUrl);
     window.addEventListener("popstate", syncTabFromUrl);
@@ -299,6 +365,33 @@
       on:click|preventDefault={() => setTab("medals")}
     >Medals</a>
   </div>
+
+{#if isLeagueMaster}
+  <div class="card hof-maint">
+    <div class="hof-maint-title">Maintenance</div>
+
+    {#if eloErr}
+      <div class="hof-maint-err">{eloErr}</div>
+    {/if}
+    {#if eloMsg}
+      <div class="hof-maint-msg">{eloMsg}</div>
+    {/if}
+
+    <div class="hof-maint-actions">
+      <button class="hof-btn hof-btn-danger" disabled={eloBusy} on:click={() => runElo(true)}>
+        {eloBusy ? "Working..." : "Recompute ELO (Full Reset)"}
+      </button>
+      <button class="hof-btn" disabled={eloBusy} on:click={() => runElo(false)}>
+        {eloBusy ? "Working..." : "Recompute ELO (Catch Up)"}
+      </button>
+    </div>
+
+    <div class="hof-maint-note">
+      Full Reset sets everyone to 1000 and replays all completed matches in the league. Catch Up only processes matches after the checkpoint.
+    </div>
+  </div>
+{/if}
+
 
   {#if tab === "seasons"}
     <div class="card" style="display:flex; justify-content: space-between; align-items:center; gap: 1rem; margin-bottom: 1rem;">
@@ -434,4 +527,63 @@
     overflow-y: auto;
     overflow-x: hidden;
   }
+
+
+/* HoF maintenance card */
+.hof-maint {
+  padding: .9rem 1rem;
+  margin-bottom: 1rem;
+}
+.hof-maint-title {
+  font-weight: 900;
+  margin-bottom: .6rem;
+}
+.hof-maint-actions {
+  display: flex;
+  gap: .6rem;
+  flex-wrap: wrap;
+  margin-top: .5rem;
+}
+.hof-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .45rem .9rem;
+  border-radius: 999px;
+  font-weight: 900;
+  cursor: pointer;
+  color: rgba(255,255,255,.9);
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.14);
+}
+.hof-btn:hover {
+  background: rgba(255,255,255,.12);
+}
+.hof-btn:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+.hof-btn-danger {
+  background: rgba(255, 107, 107, 0.18);
+  border-color: rgba(255, 107, 107, 0.32);
+}
+.hof-btn-danger:hover {
+  background: rgba(255, 107, 107, 0.24);
+}
+.hof-maint-err {
+  margin-top: .25rem;
+  color: #ff9a9a;
+  font-weight: 700;
+}
+.hof-maint-msg {
+  margin-top: .25rem;
+  color: #9fffb2;
+  font-weight: 700;
+}
+.hof-maint-note {
+  margin-top: .55rem;
+  color: rgba(255,255,255,.65);
+  font-size: .95rem;
+}
+
 </style>

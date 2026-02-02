@@ -344,6 +344,23 @@ export async function getCoaches(leagueArg) {
   });
 }
 
+// -----------------------------
+// Maintenance: ELO
+// -----------------------------
+
+/**
+ * League-master only. Recomputes coach ELO for the entire league.
+ * By default resets ELO to baseline (1000) and recomputes from scratch.
+ */
+export async function recomputeLeagueElo(leagueId, reset = true) {
+  const lid = Number(leagueId);
+  if (!Number.isFinite(lid)) throw new Error("Invalid leagueId");
+
+  return apiFetch(`/leagues/${lid}/elo/recompute?reset=${reset ? "true" : "false"}`, {
+    method: "POST",
+  });
+}
+
 export async function getAllCoaches() {
   return cached("coaches:all", async () => {
     const res = await apiFetch(`/coaches/all`, { method: "GET" });

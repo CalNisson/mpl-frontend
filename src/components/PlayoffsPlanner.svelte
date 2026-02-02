@@ -222,7 +222,7 @@
     const matches = [];
     const links = [];
 
-    function pushMatch(m) {
+    function pushMatch(m, roundLabel) {
       const t1 = m?.players?.[0]?.teamId ?? null;
       const t2 = m?.players?.[1]?.teamId ?? null;
 
@@ -231,7 +231,7 @@
         phase: m.phase,
         round_index: m.roundIndex,
         slot_index: m.slotIndex,
-        round_label: m.label,
+        round_label: (roundLabel ?? m.label),
         team1_id: t1,
         team2_id: t2
       });
@@ -246,10 +246,10 @@
     }
 
     for (const round of preview.playoffsRounds ?? []) {
-      for (const m of round?.matches ?? []) pushMatch(m);
+      for (const m of round?.matches ?? []) pushMatch(m, round?.name ?? null);
     }
     for (const round of preview.playinsRounds ?? []) {
-      for (const m of round?.matches ?? []) pushMatch(m);
+      for (const m of round?.matches ?? []) pushMatch(m, round?.name ?? null);
     }
 
     return { published: true, overwrite, matches, links };
