@@ -1,7 +1,8 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, createEventDispatcher } from "svelte";
   import {
     getSeasonSchedule,
+    getPlayoffsStatus,
     generateSeasonSchedule,
     createSeasonScheduleMatch,
     deleteSeasonScheduleMatch,
@@ -13,11 +14,16 @@
   export let teams = []; // [{ id, team_name, color_primary, ... }]
   export let canEdit = false;
 
+  const dispatch = createEventDispatcher();
+
   let editMode = false;
 
   let loading = true;
   let error = "";
   let schedule = [];
+
+  // playoffs status banner
+  let playoffsStatus = null;
 
   // generation
   let weeks = 10;
@@ -37,6 +43,14 @@
   let editDoubleLoss = false;
   let savingEdit = false;
 
+  // Forfeit support:
+  // Forfeit is persisted by setting replay = "FORFEIT"
+  // (winner + score are STILL editable and saved)
+  let editForfeit = false;
+  let editWinnerId = "";
+  let editTeam1Score = "";
+  let editTeam2Score = "";
+
   let lastLoadedSeasonId = null;
 
   $: teamById = (teams ?? []).reduce((acc, t) => {
@@ -53,6 +67,20 @@
     acc[w].push(m);
     return acc;
   }, {});
+
+  // keep edit toggles consistent
+  $: if (editingId && editDoubleLoss) {
+    // Double loss overrides everything
+    editForfeit = false;
+    editWinnerId = "";
+    editTeam1Score = "";
+    editTeam2Score = "";
+  }
+
+  $: if (editingId && editForfeit && !editDoubleLoss) {
+    // Forfeit requires a winner; default to Team 1 if missing
+    if (!editWinnerId) editWinnerId = editTeam1 || "";
+  }
 
   function normColor(c) {
     if (!c) return null;
@@ -84,6 +112,16 @@
     error = e?.message ?? String(e);
   }
 
+  function isDoubleLoss(m) {
+    return !!(m?.is_double_loss ?? m?.double_loss ?? m?.isDoubleLoss);
+  }
+
+  function isForfeit(m) {
+    if (isDoubleLoss(m)) return false;
+    const r = (m?.replay ?? "").toString().trim().toUpperCase();
+    return r === "FORFEIT";
+  }
+
   async function load() {
     if (!seasonId) return;
     loading = true;
@@ -92,6 +130,12 @@
     try {
       const rows = await getSeasonSchedule(seasonId);
       schedule = Array.isArray(rows) ? rows : [];
+
+      try {
+        playoffsStatus = await getPlayoffsStatus(seasonId);
+      } catch {
+        playoffsStatus = null;
+      }
 
       // Default the add-week input to the first empty week (or 1).
       const existingWeeks = new Set(schedule.map((m) => m.week ?? 0));
@@ -170,17 +214,40 @@
     editWeek = Number(m.week ?? 1);
     editTeam1 = String(m.team1_id ?? "");
     editTeam2 = String(m.team2_id ?? "");
-    editDoubleLoss = !!(m.is_double_loss ?? m.double_loss ?? m.isDoubleLoss);
+
+    editDoubleLoss = isDoubleLoss(m);
+    editForfeit = isForfeit(m);
+
+    editWinnerId = String(m?.winner_id ?? "");
+    editTeam1Score = m?.team1_score == null ? "" : String(m.team1_score);
+    editTeam2Score = m?.team2_score == null ? "" : String(m.team2_score);
+
+    if (editDoubleLoss) {
+      editForfeit = false;
+      editWinnerId = "";
+      editTeam1Score = "";
+      editTeam2Score = "";
+    }
+
+    if (editForfeit && !editWinnerId) {
+      editWinnerId = String(m?.team1_id ?? "");
+    }
   }
 
   function cancelEdit() {
     editingId = null;
     savingEdit = false;
     editDoubleLoss = false;
+
+    editForfeit = false;
+    editWinnerId = "";
+    editTeam1Score = "";
+    editTeam2Score = "";
   }
 
   async function onSaveEdit() {
     if (!seasonId || !editingId) return;
+
     const week = Number(editWeek);
     const team1_id = Number(editTeam1);
     const team2_id = Number(editTeam2);
@@ -191,15 +258,56 @@
       return;
     }
 
+    const widRaw = String(editWinnerId ?? "").trim();
+    const winner_id = widRaw ? Number(widRaw) : null;
+
+    const s1Raw = String(editTeam1Score ?? "").trim();
+    const s2Raw = String(editTeam2Score ?? "").trim();
+    const team1_score = s1Raw === "" ? null : Number(s1Raw);
+    const team2_score = s2Raw === "" ? null : Number(s2Raw);
+
+    // Validate forfeit winner
+    if (editForfeit && !editDoubleLoss) {
+      if (!winner_id) {
+        error = "Forfeit requires selecting a winner.";
+        return;
+      }
+      if (winner_id !== team1_id && winner_id !== team2_id) {
+        error = "Forfeit winner must be Team 1 or Team 2.";
+        return;
+      }
+    }
+
     savingEdit = true;
     error = "";
     try {
-      await patchSeasonScheduleMatch(seasonId, editingId, {
+      // IMPORTANT: replay handling
+      // - Double loss => replay null
+      // - Forfeit => replay "FORFEIT"
+      // - Otherwise => do NOT touch replay (unless we are unsetting a prior FORFEIT)
+      const wasForfeit = schedule.find((x) => x.id === editingId)?.replay?.toString().trim().toUpperCase() === "FORFEIT";
+
+      const body = {
         week,
         team1_id,
         team2_id,
         is_double_loss: !!editDoubleLoss,
-      });
+
+        // scores + winner are editable for both normal + forfeit
+        winner_id: editDoubleLoss ? null : winner_id,
+        team1_score: editDoubleLoss ? null : (Number.isFinite(team1_score) ? team1_score : null),
+        team2_score: editDoubleLoss ? null : (Number.isFinite(team2_score) ? team2_score : null),
+
+        ...(editDoubleLoss
+          ? { replay: null }
+          : editForfeit
+            ? { replay: "FORFEIT" }
+            : wasForfeit
+              ? { replay: null } // unchecking forfeit clears the FORFEIT marker
+              : {}),
+      };
+
+      await patchSeasonScheduleMatch(seasonId, editingId, body);
       await refresh();
       cancelEdit();
     } catch (e) {
@@ -223,23 +331,25 @@
     }
   }
 
-  function isDoubleLoss(m) {
-    return !!(m?.is_double_loss ?? m?.double_loss ?? m?.isDoubleLoss);
-  }
-
   function scoreText(m) {
     if (isDoubleLoss(m)) return "DL";
     const a = m.team1_score;
     const b = m.team2_score;
-    if (a == null || b == null) return "—";
+
+    if (a == null || b == null) return isForfeit(m) ? "F" : "—";
     return `${a}-${b}`;
   }
 
   function winnerLabel(m) {
     if (isDoubleLoss(m)) return "N/A";
     if (!m.winner_id) return "—";
-    if (m.winner_id === m.team1_id) return `${m.team1_name}`;
-    if (m.winner_id === m.team2_id) return `${m.team2_name}`;
+
+    if (m.winner_id === m.team1_id) {
+      return isForfeit(m) ? `${m.team1_name}` : `${m.team1_name}`;
+    }
+    if (m.winner_id === m.team2_id) {
+      return isForfeit(m) ? `${m.team2_name}` : `${m.team2_name}`;
+    }
     return "—";
   }
 </script>
@@ -260,18 +370,23 @@
     <div class="card muted" style="margin:.5rem 0;">{error}</div>
   {/if}
 
+  {#if playoffsStatus?.regular_season_complete}
+    <div class="playoffs-banner" role="status" aria-live="polite">
+      <div class="banner-text">
+        <strong>Regular Season Complete!</strong>
+        <span class="muted" style="margin-left:.5rem;">Playoffs can now be published / viewed.</span>
+      </div>
+      <button class="btn coral" on:click={() => dispatch("goPlayoffs")}>
+        Go to Playoffs →
+      </button>
+    </div>
+  {/if}
+
   {#if canEdit && editMode}
     <div class="schedule-admin">
       <div class="admin-row">
         <label class="label" style="margin:0;">Regular season weeks</label>
-        <input
-          class="select"
-          type="number"
-          min="1"
-          step="1"
-          bind:value={weeks}
-          style="max-width: 140px;"
-        />
+        <input class="select" type="number" min="1" step="1" bind:value={weeks} style="max-width: 140px;" />
         <button class="btn coral" on:click={onGenerate} disabled={generating}>
           {generating ? "Generating…" : "Randomize schedule"}
         </button>
@@ -363,10 +478,46 @@
                         </select>
                       </label>
 
-                      <label class="dlToggle">
-                        <input type="checkbox" bind:checked={editDoubleLoss} />
-                        <span>Double loss</span>
-                      </label>
+                      <div class="editFlags">
+                        <label class="dlToggle">
+                          <input type="checkbox" bind:checked={editDoubleLoss} />
+                          <span>Double loss</span>
+                        </label>
+
+                        <label class="dlToggle" title='Mark as forfeit (replay will be stored as "FORFEIT").'>
+                          <input type="checkbox" bind:checked={editForfeit} disabled={editDoubleLoss} />
+                          <span>Forfeit</span>
+                        </label>
+                      </div>
+
+                      <div class="editResult">
+                        <label class="editField">
+                          <span class="weekLab">Team 1 score</span>
+                          <input class="select" type="number" min="0" step="1" bind:value={editTeam1Score} disabled={editDoubleLoss} />
+                        </label>
+
+                        <label class="editField">
+                          <span class="weekLab">Team 2 score</span>
+                          <input class="select" type="number" min="0" step="1" bind:value={editTeam2Score} disabled={editDoubleLoss} />
+                        </label>
+
+                        <label class="editField">
+                          <span class="weekLab">Winner</span>
+                          <select class="select" bind:value={editWinnerId} disabled={editDoubleLoss}>
+                            <option value="">—</option>
+                            {#if editTeam1}
+                              <option value={editTeam1}>
+                                {(teamById[Number(editTeam1)]?.team_name) ?? `Team ${editTeam1}`}
+                              </option>
+                            {/if}
+                            {#if editTeam2}
+                              <option value={editTeam2}>
+                                {(teamById[Number(editTeam2)]?.team_name) ?? `Team ${editTeam2}`}
+                              </option>
+                            {/if}
+                          </select>
+                        </label>
+                      </div>
                     </div>
                   {:else}
                     <span class="team-pill" style={pillStyle(m.team1_id)}>{m.team1_name}</span>
@@ -379,6 +530,8 @@
                   <div class="scoreCell">
                     {#if isDoubleLoss(m)}
                       <span class="dlPill" title="Double loss">DL</span>
+                    {:else if isForfeit(m) && (m.team1_score == null || m.team2_score == null)}
+                      <span class="forfeitPill" title="Forfeit">F</span>
                     {:else}
                       <span>{scoreText(m)}</span>
                     {/if}
@@ -390,6 +543,8 @@
                 <td>
                   {#if isDoubleLoss(m)}
                     <span class="dlReplay">DOUBLE LOSS</span>
+                  {:else if isForfeit(m)}
+                    <span class="forfeitReplay">FORFEIT</span>
                   {:else if m.replay && String(m.replay).trim().length > 0}
                     <a href={m.replay} target="_blank" rel="noopener noreferrer" class="replay-link">
                       REPLAY
@@ -560,7 +715,24 @@
 
   .editTeams {
     display: grid;
-    grid-template-columns: auto 1fr 1fr;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    align-items: end;
+  }
+
+  .editFlags {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 2px;
+  }
+
+  .editResult {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 0.6rem;
     align-items: end;
   }
@@ -602,7 +774,19 @@
     background: rgba(255, 255, 255, 0.08);
   }
 
-  /* ✅ NEW: replay “DOUBLE LOSS” label */
+  .forfeitPill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 950;
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+  }
+
   .dlReplay {
     display: inline-flex;
     align-items: center;
@@ -617,6 +801,20 @@
     color: rgba(255, 220, 220, 0.98);
   }
 
+  .forfeitReplay {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-weight: 950;
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    border: 1px solid rgba(255, 220, 220, 0.22);
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.95);
+  }
+
   tr.is-double-loss td {
     opacity: 0.92;
   }
@@ -625,13 +823,16 @@
     .editTeams {
       grid-template-columns: 1fr;
     }
+    .editResult {
+      grid-template-columns: 1fr;
+    }
     .btnRow {
       justify-content: flex-start;
     }
   }
 
   .replay-link {
-    color: rgba(255, 170, 170, 0.95); /* soft coral */
+    color: rgba(255, 170, 170, 0.95);
     font-weight: 700;
     text-decoration: none;
     transition: color 120ms ease, text-decoration-color 120ms ease;
@@ -641,5 +842,24 @@
     color: rgba(255, 200, 200, 1);
     text-decoration: underline;
     text-decoration-color: rgba(255, 200, 200, 0.6);
+  }
+
+  .playoffs-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    margin: 0.5rem 0 1rem 0;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .playoffs-banner .banner-text {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.25rem;
   }
 </style>

@@ -10,6 +10,7 @@
     getCoachSeasonDetails,
     getCoaches,
     getSeasonTeams,
+    getPlayoffsStatus,
     updateLeagueRules
   } from "../lib/api.js";
 
@@ -668,38 +669,30 @@
     }
   }
 
+  // ----------------------------
+  // Playoffs published status (backend)
+  // ----------------------------
+  let playoffsStatus = null;
   let playoffsPublished = false;
 
-  // keep rules in sync with selected league (frontend-only PoC)
-  let lastRulesLeagueId = null;
-  $: {
-    const lid = ctx?.league?.id ?? null;
-    if (lid !== lastRulesLeagueId) {
-      lastRulesLeagueId = lid;
-      loadLeagueRules();
+  async function loadPlayoffsStatus() {
+    if (!ctx?.league?.id || !activeSeason?.id) {
+      playoffsStatus = null;
+      playoffsPublished = false;
+      return;
     }
-  }
 
-  // localStorage key should match the component
-  function playoffsKey() {
-    const sid = activeSeason?.id ?? "none";
-    const lid = ctx?.league?.id ?? "none";
-    return `mpl.playoffs.${lid}.${sid}.published`;
-  }
-
-  function readPlayoffsPublished() {
     try {
-      playoffsPublished = JSON.parse(localStorage.getItem(playoffsKey()) || "false");
+      playoffsStatus = await getPlayoffsStatus(activeSeason.id, ctx.league.id);
+      playoffsPublished = !!(playoffsStatus?.playoffs_published || playoffsStatus?.playins_published);
     } catch {
+      playoffsStatus = null;
       playoffsPublished = false;
     }
   }
 
-  // refresh when league/season changes
-  $: if (hasLeague && activeSeason?.id) {
-    readPlayoffsPublished();
-  } else {
-    playoffsPublished = false;
+  $: if (tab === "Playoffs" && activeSeason?.id && ctx?.league?.id) {
+    loadPlayoffsStatus();
   }
 
   // ---- lifecycle ----

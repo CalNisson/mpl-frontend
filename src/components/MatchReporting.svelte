@@ -15,14 +15,23 @@
 
   const ANALYZER_PATH = `${import.meta.env.BASE_URL}replay_analyzer.html`;
 
-  let loading = true;
+  
+function roundLabel(m) {
+  if (m?.is_playins) return `Play-ins: ${m.playins_round ?? "Round"}`;
+  if (m?.is_playoff) return `Playoffs: ${m.playoff_round ?? "Round"}`;
+  return `Week ${m.week ?? "?"}`;
+}
+
+let loading = true;
   let error = "";
+  let overwrite = false;
+
   let matches = [];
   let rosterRows = [];
 
   let analysis = null;
 
-  let selectedWeek = "";
+  let selectedGroup = "";
   let selectedMatchId = "";
 
   let mapping = null;
@@ -159,7 +168,52 @@
     return Object.entries(stats).map(([key, v]) => ({ key, ...v }));
   }
 
-  function getWeeks() {
+  
+function groupKey(m) {
+  if (m?.is_playins) return `PI:${m.playins_round ?? "Play-ins"}`;
+  if (m?.is_playoff) return `PO:${m.playoff_round ?? "Playoffs"}`;
+  return `W:${m.week ?? "?"}`;
+}
+
+function groupLabelFromKey(k) {
+  if (!k) return "";
+  if (k.startsWith("PI:")) return `Play-ins: ${k.slice(3)}`;
+  if (k.startsWith("PO:")) return `Playoffs: ${k.slice(3)}`;
+  if (k.startsWith("W:")) return `Week ${k.slice(2)}`;
+  return k;
+}
+
+function getGroups() {
+  const seen = new Set();
+  const out = [];
+  for (const m of (matches ?? [])) {
+    const k = groupKey(m);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  // Sort: play-ins first, then playoffs, then regular weeks ascending
+  out.sort((a, b) => {
+    const pa = a.startsWith("PI:") ? 0 : a.startsWith("PO:") ? 1 : 2;
+    const pb = b.startsWith("PI:") ? 0 : b.startsWith("PO:") ? 1 : 2;
+    if (pa !== pb) return pa - pb;
+
+    if (a.startsWith("W:") && b.startsWith("W:")) {
+      const na = Number(a.slice(2));
+      const nb = Number(b.slice(2));
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    }
+    return a.localeCompare(b);
+  });
+  return out;
+}
+
+function matchesForGroup(group) {
+  if (!group) return [];
+  return (matches ?? []).filter((m) => groupKey(m) === group);
+}
+
+function getWeeks() {
     const set = new Set(matches.map((m) => m.week).filter((w) => w != null));
     return Array.from(set).sort((a, b) => a - b);
   }
@@ -279,9 +333,14 @@
     readyToUpload = false;
     showOverride = false;
 
-    const wk = Number(selectedWeek);
     const matchId = Number(selectedMatchId);
-    if (!analysis || !wk || !matchId) return;
+    if (!analysis || !matchId) return;
+
+    const m = matches.find((x) => x.id === matchId);
+    if (!m) {
+      mapping = { error: "Selected match not found.", mismatches: [] };
+      return;
+    }
 
     const players = analysisPlayers();
     if (players.length < 2) {
@@ -289,9 +348,9 @@
       return;
     }
 
-    const m = matches.find((x) => x.id === matchId);
-    if (!m) {
-      mapping = { error: "Selected match not found.", mismatches: [] };
+    const wk = Number(m.week);
+    if (!Number.isFinite(wk) || wk <= 0) {
+      mapping = { error: "Selected match has no valid week value.", mismatches: [] };
       return;
     }
 
@@ -463,7 +522,7 @@
     loading = true;
     error = "";
     analysis = null;
-    selectedWeek = "";
+    selectedGroup = "";
     selectedMatchId = "";
     mapping = null;
 
@@ -490,7 +549,7 @@
     const json = data.analysis?.json ?? data.analysis ?? null;
     analysis = { replayUrl: data.replayUrl ?? "", analysis: json };
 
-    selectedWeek = "";
+    selectedGroup = "";
     selectedMatchId = "";
     mapping = null;
     readyToUpload = false;
@@ -506,7 +565,7 @@
     window.removeEventListener("message", onMessage);
   });
 
-  $: if (analysis && selectedWeek && selectedMatchId) {
+  $: if (analysis && selectedGroup && selectedMatchId) {
     computeMapping();
   }
 
@@ -591,6 +650,7 @@
           winner_id,
           is_double_loss: false,
           pokemon_stats,
+          force_overwrite: !!overwrite,
         });
         await load();
         return;
@@ -612,6 +672,7 @@
           winner_id,
           is_double_loss: false,
           pokemon_stats,
+          force_overwrite: !!overwrite,
         });
         await load();
         return;
@@ -696,7 +757,7 @@
 
           analysis = { replayUrl, analysis: json };
 
-          selectedWeek = "";
+          selectedGroup = "";
           selectedMatchId = "";
           mapping = null;
           readyToUpload = false;
@@ -726,19 +787,19 @@
           <div class="row">
             <label class="field">
               <span class="lab">Week</span>
-              <select class="select" bind:value={selectedWeek}>
-                <option value="">Select week…</option>
-                {#each getWeeks() as w}
-                  <option value={w}>{w}</option>
+              <select class="select" bind:value={selectedGroup}>
+                <option value="">Select round…</option>
+                {#each getGroups() as g}
+                  <option value={g}>{groupLabelFromKey(g)}</option>
                 {/each}
               </select>
             </label>
 
             <label class="field">
               <span class="lab">Match</span>
-              <select class="select" bind:value={selectedMatchId} disabled={!selectedWeek}>
+              <select class="select" bind:value={selectedMatchId} disabled={!selectedGroup}>
                 <option value="">Select match…</option>
-                {#each matchesForWeek(selectedWeek) as m (m.id)}
+                {#each matchesForGroup(selectedGroup) as m (m.id)}
                   <option value={m.id}>
                     {m.team1_name} vs {m.team2_name} (#{m.id})
                   </option>
@@ -830,7 +891,15 @@
                 <button class="btn" on:click={() => (showOverride = !showOverride)}>
                   {showOverride ? "Hide override" : "Override / edit before upload"}
                 </button>
-                <button class="btn coral" on:click={onUpload} disabled={!readyToUpload && !showOverride}>
+                
+{#if canEdit}
+  <label class="checkbox" style="display:flex; align-items:center; gap:.5rem; margin-right:.75rem;">
+    <input type="checkbox" bind:checked={overwrite} />
+    <span>Overwrite</span>
+  </label>
+{/if}
+
+<button class="btn coral" on:click={onUpload} disabled={!readyToUpload && !showOverride}>
                   Upload
                 </button>
               </div>
@@ -960,13 +1029,6 @@
     flex: 1;
   }
   .lab { font-size: 0.85rem; opacity: 0.9; }
-  .select {
-    padding: 0.55rem 0.65rem;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(0, 0, 0, 0.25);
-    color: rgba(255, 255, 255, 0.92);
-  }
   select.select { appearance: none; }
   .btn {
     appearance: none;

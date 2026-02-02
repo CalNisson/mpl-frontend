@@ -4,6 +4,7 @@
   export let matchGames = [];
   export let teams = [];
   export let phase = 'playoffs';
+  export let links = [];
 
   // ----- Layout constants -----
   const MATCH_WIDTH = 260;
@@ -399,7 +400,26 @@
     }
 
     // Link winners between main rounds by team names
-    for (let i = 0; i < bracketRounds.length - 1; i++) {
+    
+  // If the backend provided explicit bracket wiring (playoff_match_links),
+  // use it. This makes published brackets render identically for everyone,
+  // even when later-round team slots are still TBD (NULL).
+  if (Array.isArray(links) && links.length) {
+    const linkMap = new Map();
+    for (const l of links) {
+      const from = Number(l.from_match_id ?? l.fromMatchId);
+      const to = Number(l.to_match_id ?? l.toMatchId);
+      if (Number.isFinite(from) && Number.isFinite(to)) linkMap.set(from, to);
+    }
+
+    for (const r of bracketRounds) {
+      for (const m of r.matches) {
+        const to = linkMap.get(Number(m.id));
+        m.nextMatchId = to != null ? to : null;
+      }
+    }
+  } else {
+for (let i = 0; i < bracketRounds.length - 1; i++) {
       const curRound = bracketRounds[i];
       const nextRound = bracketRounds[i + 1];
 
@@ -422,6 +442,8 @@
         }
       }
     }
+  }
+
 
     // 🔧 Apply special seeding for 11-team playoff structures
     apply11TeamSeeding(bracketRounds, teams, matches, matchGames);

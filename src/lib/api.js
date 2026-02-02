@@ -201,6 +201,57 @@ export async function getSeasonSchedule(seasonId, leagueArg) {
   });
 }
 
+
+// ----------------------------
+// Playoffs (season-scoped)
+// ----------------------------
+
+export async function getPlayoffsStatus(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/playoffs/status`, bits),
+    { method: "GET" }
+  );
+
+  return await handle(res);
+}
+
+export async function getPlayoffsBracket(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/playoffs/bracket`, bits),
+    { method: "GET" }
+  );
+
+  return await handle(res);
+}
+
+export async function publishPlayoffs(seasonId, payload, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/playoffs/publish`, bits),
+    {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+
+  const out = await handle(res);
+
+  // Bust relevant caches so UI reflects the new official bracket immediately.
+  clearApiCache(`playoffs-status:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`playoffs-bracket:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`season-matches-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`season-dashboard:${leagueKeyFromBits(bits)}:${seasonId}`);
+
+  return out;
+}
+
+
 export async function generateSeasonSchedule(seasonId, { weeks, overwrite = true }, leagueArg) {
   const bits = normalizeLeagueBits(leagueArg);
 
@@ -718,13 +769,14 @@ export async function getSeasonRostersForReporting(seasonId, leagueArg) {
 // Upload a completed match report.
 // Expects `payload` to be a plain JS object that matches your backend schema.
 export async function uploadMatchReport(matchId, payload) {
+  const body = { ...(payload ?? {}) };
+  if (body.force_overwrite == null) body.force_overwrite = false;
+
   return apiFetch(`/matches/${matchId}/report`, {
     method: "PATCH",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
 }
-
-
 // ----------------------------
 // Transactions
 // ----------------------------
