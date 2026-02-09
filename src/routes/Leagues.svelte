@@ -1748,7 +1748,7 @@
             {#if !activeSeason?.id}
               <div class="card muted">No active season selected.</div>
             {:else}
-              <TierListEditor seasonId={activeSeason.id} canEdit={isLeagueMaster} />
+              <TierListEditor seasonId={activeSeason.id} leagueId={ctx?.league?.id} canEdit={isLeagueMaster} />
             {/if}
           </div>
 

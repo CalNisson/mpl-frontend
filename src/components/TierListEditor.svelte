@@ -2,6 +2,8 @@
   import { onMount, onDestroy, tick } from "svelte";
   import {
     getSeasonTierList,
+    listLeagueTierListTemplates,
+    initSeasonTierList,
     patchSeasonTierAssignments,
     createSeasonTier,
     putTierColumns,
@@ -10,6 +12,7 @@
   } from "../lib/api.js";
 
   export let seasonId;
+  export let leagueId = null;
   export let canEdit = false;
 
   // ---------- Tier color themes ----------
@@ -59,6 +62,22 @@
   let loading = false;
   let error = "";
 
+  // When a new season has no tier list yet, the backend returns 404.
+  // We show an init UI for league masters to create/clone one.
+  let missingTierList = false;
+  let templatesLoading = false;
+  let templates = [];
+  let initMode = "new"; // "new" | "existing"
+  let selectedSourceSeasonId = "";
+  let initBusy = false;
+  let initError = "";
+
+  function httpStatusFromError(e) {
+    const msg = e?.message ?? "";
+    const m = /^HTTP\s+(\d{3})\s*:/i.exec(msg);
+    return m ? Number(m[1]) : null;
+  }
+
   let board = null;
   let tiers = [];
   let columns = [];
@@ -94,6 +113,60 @@
   let tierEditById = {};
   let tierSavingById = {};
   let tierDeletingById = {};
+
+  function httpStatus(e) {
+    const m = String(e?.message ?? e).match(/HTTP\s+(\d+):/i);
+    return m ? Number(m[1]) : null;
+  }
+
+  async function loadTemplates() {
+    templatesError = "";
+    templatesLoading = true;
+    try {
+      if (!leagueId) {
+        templates = [];
+        return;
+      }
+      const rows = await listLeagueTierListTemplates(leagueId);
+      templates = Array.isArray(rows) ? rows : [];
+
+      // Default selection = most recent
+      if (!selectedSourceSeasonId && templates.length) {
+        selectedSourceSeasonId = String(templates[0].season_id);
+      }
+    } catch (e) {
+      templatesError = String(e?.message ?? e);
+      templates = [];
+    } finally {
+      templatesLoading = false;
+    }
+  }
+
+  async function initTierList() {
+    if (!canEdit) return;
+    if (!seasonId) return;
+
+    error = "";
+    initBusy = true;
+    try {
+      if (initMode === "existing") {
+        const sid = Number(selectedSourceSeasonId);
+        if (!Number.isFinite(sid)) throw new Error("Pick an existing season tier list first.");
+        await initSeasonTierList(seasonId, { source_season_id: sid });
+      } else {
+        // "Create new" = clone the most recent season tier list automatically.
+        await initSeasonTierList(seasonId);
+      }
+
+      // Reload board
+      missingTierList = false;
+      await refresh();
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      initBusy = false;
+    }
+  }
 
   function ensureTierEdit(t) {
     const id = Number(t?.id);
@@ -440,6 +513,8 @@
     resetMessages();
     loading = true;
     board = null;
+    missingTierList = false;
+    initError = "";
 
     try {
       const res = await getSeasonTierList(seasonId, { include_hidden: editMode });
@@ -512,7 +587,30 @@
       bumpRender();
       scheduleMeasure();
     } catch (e) {
-      error = e?.message ?? String(e);
+      const status = httpStatusFromError(e);
+
+      // New season with no tier list yet.
+      if (status === 404) {
+        missingTierList = true;
+        error = "";
+
+        // Preload templates for the dropdown if we can.
+        if (canEdit && leagueId) {
+          templatesLoading = true;
+          try {
+            templates = await listLeagueTierListTemplates(leagueId);
+          } catch (e2) {
+            // Non-fatal; user can still create-from-latest.
+            initError = e2?.message ?? String(e2);
+            templates = [];
+          } finally {
+            templatesLoading = false;
+          }
+        }
+      } else {
+        error = e?.message ?? String(e);
+      }
+
       board = null;
       tierList = null;
       tiers = [];
@@ -523,6 +621,29 @@
       scheduleMeasure();
     } finally {
       loading = false;
+    }
+  }
+
+  async function onInitTierList() {
+    if (!canEdit || !seasonId) return;
+    initError = "";
+    initBusy = true;
+    try {
+      const src =
+        initMode === "existing" && selectedSourceSeasonId
+          ? Number(selectedSourceSeasonId)
+          : null;
+
+      await initSeasonTierList(seasonId, {
+        ...(src != null ? { source_season_id: src } : {}),
+      });
+
+      // After init, load the board normally.
+      await load();
+    } catch (e) {
+      initError = e?.message ?? String(e);
+    } finally {
+      initBusy = false;
     }
   }
 
@@ -1049,6 +1170,49 @@
 
   {#if loading}
     <div class="card muted">Loading tier list…</div>
+  {:else if missingTierList}
+    <div class="card">
+      <div class="panel-title">No tier list yet for this season</div>
+      <div class="muted" style="margin-top:.35rem;">
+        This is normal for a brand-new season. As a league master you can either create a new tier list
+        (by cloning the most recent season tier list in this league) or clone a specific existing season tier list.
+      </div>
+
+      <div class="row" style="margin-top:.75rem; align-items:center;">
+        <label class="check">
+          <input type="radio" name="tierInitMode" value="new" bind:group={initMode} />
+          <span>Create new (clone latest)</span>
+        </label>
+
+        <label class="check">
+          <input type="radio" name="tierInitMode" value="existing" bind:group={initMode} />
+          <span>Use existing</span>
+        </label>
+
+        {#if initMode === "existing"}
+          <select class="select" bind:value={selectedSourceSeasonId} disabled={templatesLoading} style="min-width: 320px;">
+            <option value="">Select a season tier list…</option>
+            {#each templates as t (t.season_id)}
+              <option value={t.season_id}>
+                {t.season_name} - {t.season_format ?? "(no format)"}
+              </option>
+            {/each}
+          </select>
+        {/if}
+
+        <button class="btn coral" on:click={onInitTierList} disabled={initBusy || (initMode === "existing" && !selectedSourceSeasonId)}>
+          {initBusy ? "Creating…" : "Create tier list"}
+        </button>
+      </div>
+
+      {#if templatesLoading}
+        <div class="muted" style="margin-top:.5rem;">Loading existing tier lists…</div>
+      {/if}
+
+      {#if initError}
+        <div class="card error" style="margin-top:.75rem;">{initError}</div>
+      {/if}
+    </div>
   {:else if !board}
     <div class="card muted">No tier list board returned.</div>
   {:else if !(visibleTiers?.length)}
@@ -1665,15 +1829,6 @@
     border-radius: 12px;
     border: 1px solid rgba(255,255,255,0.10);
     background: rgba(0,0,0,0.18);
-  }
-  .select{
-    border-radius: 10px;
-    border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(0,0,0,0.18);
-    color: rgba(255,255,255,0.92);
-    padding: 6px 8px;
-    outline: none;
-    font-weight: 800;
   }
 
   /* ============================

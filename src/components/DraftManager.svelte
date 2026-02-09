@@ -201,14 +201,28 @@
     // keep msg as-is on silent refresh so flashes don't disappear mid-action
     if (!silent) msg = "";
 
-    try {
-      const [snap, board] = await Promise.all([
-        getDraftSnapshot(seasonId),
-        getSeasonTierList(seasonId),
-      ]);
+    const httpStatusFromError = (e) => {
+      const msg = e?.message ?? "";
+      const m = /^HTTP\s+(\d{3})\s*:/i.exec(msg);
+      return m ? Number(m[1]) : null;
+    };
 
+    try {
+      const snap = await getDraftSnapshot(seasonId);
       snapshot = snap;
-      tierBoard = board;
+
+      // Tier list might not exist yet at the very start of a season.
+      try {
+        tierBoard = await getSeasonTierList(seasonId);
+      } catch (e2) {
+        if (httpStatusFromError(e2) === 404) {
+          tierBoard = null;
+          // Don't treat as a hard error for the draft tab; league masters can create one in the Tier List tab.
+          if (!silent) msg = "No tier list has been created for this season yet.";
+        } else {
+          throw e2;
+        }
+      }
 
       // hydrate settings
       minPokemon = snap.settings.min_pokemon;

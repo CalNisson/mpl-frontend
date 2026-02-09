@@ -658,6 +658,40 @@ export async function patchSeasonTierListSettings(seasonId, payload) {
 }
 
 // ----------------------------
+// Tier List initialization / cloning (for new seasons)
+// ----------------------------
+
+export async function listLeagueTierListTemplates(leagueId) {
+  const id = Number(leagueId);
+  if (!Number.isFinite(id)) throw new Error("Invalid leagueId");
+
+  const key = `league-tierlist-templates:${id}`;
+  return cached(key, async () => {
+    const res = await apiFetch(`/leagues/${id}/tierlist_templates`, { method: "GET" });
+    return handle(res);
+  });
+}
+
+export async function initSeasonTierList(seasonId, { source_season_id } = {}) {
+  const sid = Number(seasonId);
+  if (!Number.isFinite(sid)) throw new Error("Invalid seasonId");
+
+  const body = {};
+  if (source_season_id != null) body.source_season_id = Number(source_season_id);
+
+  const res = await apiFetch(`/seasons/${sid}/tierlist/init`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+  const out = await handle(res);
+  clearApiCache(`season-tierlist:${sid}:hidden=`);
+  clearApiCache(`league-tierlist-templates:`);
+  clearApiCache("season-dashboard:");
+  return out;
+}
+
+// ----------------------------
 // Draft (season-scoped)
 // ----------------------------
 
