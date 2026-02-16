@@ -1181,7 +1181,7 @@
       <div class="row" style="margin-top:.75rem; align-items:center;">
         <label class="check">
           <input type="radio" name="tierInitMode" value="new" bind:group={initMode} />
-          <span>Create new (clone latest)</span>
+          <span>Create new</span>
         </label>
 
         <label class="check">
@@ -1190,13 +1190,29 @@
         </label>
 
         {#if initMode === "existing"}
-          <select class="select" bind:value={selectedSourceSeasonId} disabled={templatesLoading} style="min-width: 320px;">
+          <select
+            class="select"
+            bind:value={selectedSourceSeasonId}
+            disabled={templatesLoading}
+            style="min-width: 320px;"
+          >
             <option value="">Select a season tier list…</option>
-            {#each templates as t (t.season_id)}
-              <option value={t.season_id}>
-                {t.season_name} - {t.season_format ?? "(no format)"}
-              </option>
-            {/each}
+
+            <optgroup label="This League">
+              {#each templates.filter(t => t.is_same_league) as t (t.season_id)}
+                <option value={t.season_id}>
+                  {t.season_name} - {t.season_format ?? "(no format)"}
+                </option>
+              {/each}
+            </optgroup>
+
+            <optgroup label="Other Active Leagues">
+              {#each templates.filter(t => !t.is_same_league) as t (t.season_id)}
+                <option value={t.season_id}>
+                  {t.league_name} - {t.season_name} - {t.season_format ?? "(no format)"}
+                </option>
+              {/each}
+            </optgroup>
           </select>
         {/if}
 
