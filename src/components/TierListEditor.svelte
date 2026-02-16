@@ -109,10 +109,33 @@
   let bulkTextByBucketKey = {};
   let bulkApplyingByBucketKey = {};
 
+  // ----------------------------
+  // Tier assignment notes
+  // ----------------------------
+  const NOTE_MAX = 255;
+  let noteEditorForPokemonId = null;
+  let noteDraft = "";
+
   // Tier settings editor
   let tierEditById = {};
   let tierSavingById = {};
   let tierDeletingById = {};
+
+  function hasNotes(a) {
+    const n = a?.notes;
+    return n != null && String(n).trim().length > 0;
+  }
+
+  function openNoteEditor(a) {
+    if (!editable) return;
+    noteEditorForPokemonId = Number(a?.pokemon_id);
+    noteDraft = String(a?.notes ?? "");
+  }
+
+  function closeNoteEditor() {
+    noteEditorForPokemonId = null;
+    noteDraft = "";
+  }
 
   function httpStatus(e) {
     const m = String(e?.message ?? e).match(/HTTP\s+(\d+):/i);
@@ -554,6 +577,7 @@
         pokemon_id: Number(a.pokemon_id),
         tier_id: Number(a.tier_id ?? a.tierId),
         points: normPoints(a.points),
+        notes: a.notes ?? null,
         dex_number: a.dex_number ?? a.dexNumber ?? null,
         owned_by_team_id: a.owned_by_team_id ?? a.ownedByTeamId ?? null,
         owned_by_team_name: a.owned_by_team_name ?? a.ownedByTeamName ?? null,
@@ -784,7 +808,7 @@
 
     pendingByPokemonId = {
       ...pendingByPokemonId,
-      [pid]: { pokemon_id: pid, tier_id: tid, points: pts }
+      [pid]: { pokemon_id: pid, tier_id: tid, points: pts, notes: current?.notes ?? null }
     };
 
     let found = false;
@@ -806,6 +830,38 @@
 
     assignments = nextAssignments;
 
+    await tick();
+    bumpRender();
+    scheduleMeasure();
+  }
+
+  async function saveNotesForPokemon(pokemonId) {
+    if (!editable) return;
+
+    const pid = Number(pokemonId);
+    const current = getAssignmentByPokemonId(pid);
+    if (!current) return;
+
+    const trimmed = String(noteDraft ?? "").trim();
+    const nextNotes = trimmed ? trimmed.slice(0, NOTE_MAX) : null;
+
+    // Update local assignments immediately
+    assignments = (assignments ?? []).map((a) =>
+      Number(a.pokemon_id) === pid ? { ...a, notes: nextNotes } : a
+    );
+
+    // Mark pending (include current tier/points + notes)
+    pendingByPokemonId = {
+      ...pendingByPokemonId,
+      [pid]: {
+        pokemon_id: pid,
+        tier_id: Number(current.tier_id),
+        points: normPoints(current.points),
+        notes: nextNotes,
+      },
+    };
+
+    closeNoteEditor();
     await tick();
     bumpRender();
     scheduleMeasure();
@@ -1450,12 +1506,15 @@
                         {#each items as a (assignmentKey(a))}
                           {@const tileStyle = tileStyleForAssignment(a)}
                           <div
-                            class="card-item {editable && isPending(a.pokemon_id) ? 'pending' : ''} {editable ? 'draggable' : 'readonly'} {(!editable && a.owned_by_team_id != null) ? 'owned' : ''}"
+                            class="card-item {hasNotes(a) ? 'has-notes' : ''} {editable && isPending(a.pokemon_id) ? 'pending' : ''} {editable ? 'draggable' : 'readonly'} {(!editable && a.owned_by_team_id != null) ? 'owned' : ''}"
                             style={tileStyle}
+                            title={!editable && hasNotes(a) ? a.notes : undefined}
                             on:pointerdown={(e) => onCardPointerDown(e, a.pokemon_id, a.pokemon_name)}
                           >
                             <div class="poke-row">
-                              <div class="poke-name">{a.pokemon_name}</div>
+                              <div class="poke-name">
+                                {a.pokemon_name}
+                              </div>
 
                               {#if editable}
                                 <button
@@ -1465,6 +1524,15 @@
                                   on:click={(e) => { e.stopPropagation(); openMovePicker(a); }}
                                 >
                                   Move
+                                </button>
+
+                                <button
+                                  class="mini-btn"
+                                  type="button"
+                                  on:pointerdown={stopDragPointerDown}
+                                  on:click={(e) => { e.stopPropagation(); openNoteEditor(a); }}
+                                >
+                                  {hasNotes(a) ? "Note" : "Add note"}
                                 </button>
                               {:else if a.owned_by_team_id != null}
                                 <div
@@ -1535,6 +1603,52 @@
                                 >
                                   Cancel
                                 </button>
+                              </div>
+                            {/if}
+
+                            {#if editable && noteEditorForPokemonId === a.pokemon_id}
+                              <div
+                                class="note-editor"
+                                on:pointerdown={allowControlPointerDown}
+                                on:click|stopPropagation
+                              >
+                                <div class="note-title">Notes (max {NOTE_MAX})</div>
+                                <textarea
+                                  class="note-textarea"
+                                  bind:value={noteDraft}
+                                  maxlength={NOTE_MAX}
+                                  placeholder="Add notes for this Pokémon…"
+                                  on:pointerdown={allowControlPointerDown}
+                                />
+
+                                <div class="note-actions">
+                                  <button
+                                    class="mini-btn primary"
+                                    type="button"
+                                    on:pointerdown={stopDragPointerDown}
+                                    on:click={() => saveNotesForPokemon(a.pokemon_id)}
+                                  >
+                                    Save
+                                  </button>
+
+                                  <button
+                                    class="mini-btn"
+                                    type="button"
+                                    on:pointerdown={stopDragPointerDown}
+                                    on:click={closeNoteEditor}
+                                  >
+                                    Cancel
+                                  </button>
+
+                                  <button
+                                    class="mini-btn"
+                                    type="button"
+                                    on:pointerdown={stopDragPointerDown}
+                                    on:click={() => { noteDraft = ""; }}
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
                               </div>
                             {/if}
 
@@ -1758,9 +1872,58 @@
     background: rgba(231,76,60,0.10);
   }
 
+  .card-item.has-notes {
+    position: relative;
+  }
+
+  .card-item.has-notes::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-top: 10px solid #000;
+    border-left: 10px solid transparent;
+    pointer-events: none;
+  }
+
   .poke-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .poke-name { font-weight: 900; font-size: 0.95rem; }
   .poke-meta { font-size: 0.75rem; }
+
+  .note-indicator {
+    font-size: 0.85rem;
+    opacity: 0.85;
+    margin-left: 6px;
+    user-select: none;
+  }
+
+  .note-editor {
+    margin-top: 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(0,0,0,0.22);
+    padding: 8px;
+  }
+
+  .note-title { font-weight: 900; font-size: 0.85rem; margin-bottom: 6px; opacity: 0.9; }
+
+  .note-textarea {
+    width: 100%;
+    min-height: 74px;
+    resize: vertical;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(0,0,0,0.18);
+    color: rgba(255,255,255,0.92);
+    padding: 0.45rem 0.55rem;
+    outline: none;
+    box-sizing: border-box;
+    font: inherit;
+  }
+
+  .note-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
 
   .pill {
     font-size: 0.72rem;
