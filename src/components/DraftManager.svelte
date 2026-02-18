@@ -86,12 +86,21 @@
       }, 4000);
   }
 
+  function toNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function teamById(id) {
-    return snapshot?.teams?.find((t) => t.team_id === id) ?? null;
+    const want = toNum(id);
+    if (want == null) return null;
+    return snapshot?.teams?.find((t) => toNum(t.team_id) === want) ?? null;
   }
 
   function budgetByTeamId(id) {
-    return snapshot?.budgets?.find((b) => b.team_id === id) ?? null;
+    const want = toNum(id);
+    if (want == null) return null;
+    return snapshot?.budgets?.find((b) => toNum(b.team_id) === want) ?? null;
   }
 
   // -----------------------------
@@ -275,13 +284,14 @@
 
   $: if (snapshot?.state?.status === "running") {
     startLocalTimer();
-    startPolling();
   } else {
     stopLocalTimer();
-    stopPolling();
   }
 
-  onMount(loadAll);
+  onMount(() => {
+    loadAll();
+    startPolling();
+  });
   onDestroy(() => {
     stopLocalTimer();
     stopPolling();
@@ -523,7 +533,7 @@
   $: showMockButton = canMockPick;
 
   $: isMyTurn =
-    !!currentTeam && !!viewerCoachId && currentTeam.coach_id === viewerCoachId;
+    !!currentTeam && viewerCoachId != null && toNum(currentTeam.coach_id) === toNum(viewerCoachId);
 
   // Coach-on-clock can always pick.
   // Admin/LM can only pick if mockPickEnabled is ON (one pick).
