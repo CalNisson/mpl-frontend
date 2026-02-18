@@ -56,7 +56,13 @@
       clearLeagueContext();
 
       done = true;
-      push("/organizations");
+      try {
+        localStorage.setItem(
+          "mpl.flash",
+          JSON.stringify({ kind: "ok", text: "Invite accepted" })
+        );
+      } catch {}
+      push("/");
     } catch (e) {
       error = e?.message || "Failed to register from invite.";
     } finally {
@@ -83,7 +89,13 @@
       clearLeagueContext();
 
       done = true;
-      push("/organizations");
+      try {
+        localStorage.setItem(
+          "mpl.flash",
+          JSON.stringify({ kind: "ok", text: "Invite accepted" })
+        );
+      } catch {}
+      push("/");
     } catch (e) {
       const msg = e?.message || "";
       // If they're not logged in yet, show a register-from-invite form

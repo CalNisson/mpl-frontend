@@ -11,6 +11,8 @@ import Leagues from "./routes/Leagues.svelte";
 import HallOfFame from "./routes/HallOfFame.svelte";
 import Admin from "./pages/Admin.svelte";
 import InviteAccept from "./pages/InviteAccept.svelte";
+import ForgotPassword from "./pages/ForgotPassword.svelte";
+import ResetPassword from "./pages/ResetPassword.svelte";
 
 export default {
   "/": Home,
@@ -21,6 +23,8 @@ export default {
   "/orgs/new": CreateOrg,
   "/leagues/new": CreateLeague,
   "/login": Login,
+  "/forgot-password": ForgotPassword,
+  "/reset-password": ResetPassword,
   "/invite": InviteAccept,
   "/register": Register,
   "/leagues": Leagues,

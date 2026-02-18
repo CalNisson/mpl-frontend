@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import { auth } from "../lib/authStore.js";
   import { link, push } from "svelte-spa-router";
 
@@ -11,9 +12,40 @@
   function go(path) {
     push(path);
   }
+  // Simple one-shot flash message (used by InviteAccept redirect)
+  let flash = null; // { kind: 'ok' | 'err' | 'muted', text: string }
+  let flashTimer = null;
+
+  onMount(() => {
+    try {
+      const raw = localStorage.getItem("mpl.flash");
+      if (raw) {
+        localStorage.removeItem("mpl.flash");
+        const v = JSON.parse(raw);
+        if (v && typeof v.text === "string" && v.text.trim()) {
+          flash = { kind: v.kind || "ok", text: v.text };
+          flashTimer = window.setTimeout(() => {
+            flash = null;
+            flashTimer = null;
+          }, 2500);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      if (flashTimer) window.clearTimeout(flashTimer);
+    };
+  });
+
 </script>
 
 <div class="wrap">
+  {#if flash}
+    <div class="card flash {flash.kind}">{flash.text}</div>
+  {/if}
+
   <div class="hero card">
     <div class="kicker">Draft League Viewer</div>
     <h1>Track seasons, standings, rosters, stats, and Hall of Fame history.</h1>

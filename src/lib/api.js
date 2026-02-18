@@ -1039,3 +1039,29 @@ export async function acceptOrgInvite(token) {
   return handle(res);
 }
 
+
+
+// ============================
+// Password reset
+// ============================
+
+export async function passwordResetRequest(body) {
+  // body: { emailOrUsername }
+  return apiFetch(`/auth/password_reset/request`, {
+    method: "POST",
+    body: JSON.stringify({
+      email_or_username: body?.emailOrUsername ?? body?.email_or_username ?? ""
+    }),
+  });
+}
+
+export async function passwordResetConfirm(body) {
+  // body: { token, newPassword }
+  return apiFetch(`/auth/password_reset/confirm`, {
+    method: "POST",
+    body: JSON.stringify({
+      token: body?.token ?? "",
+      new_password: body?.newPassword ?? body?.new_password ?? ""
+    }),
+  });
+}
