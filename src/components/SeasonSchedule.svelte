@@ -138,10 +138,12 @@
       }
 
       // Default the add-week input to the first empty week (or 1).
-      const existingWeeks = new Set(schedule.map((m) => m.week ?? 0));
-      let w = 1;
-      while (existingWeeks.has(w)) w += 1;
-      addWeek = Math.max(1, w);
+      if (!addWeek) {
+        const existingWeeks = new Set(schedule.map((m) => m.week ?? 0));
+        let w = 1;
+        while (existingWeeks.has(w)) w += 1;
+        addWeek = Math.max(1, w);
+      }
     } catch (e) {
       setErr(e);
       schedule = [];
@@ -455,7 +457,7 @@
                     <div class="editTeams">
                       <label class="editField">
                         <span class="weekLab">Week</span>
-                        <input class="select" type="number" min="1" step="1" bind:value={editWeek} />
+                        <input class="select" type="number" min="1" bind:value={editWeek} />
                       </label>
 
                       <label class="editField">
@@ -687,14 +689,6 @@
   .btn.danger:hover:not(:disabled) {
     border-color: rgba(255, 80, 80, 0.55);
     background: rgba(255, 80, 80, 0.22);
-  }
-
-  .select {
-    padding: 0.55rem 0.65rem;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    background: rgba(0, 0, 0, 0.25);
-    color: rgba(255, 255, 255, 0.92);
   }
 
   select.select {
