@@ -12,6 +12,10 @@
     endDraft,
     skipDraftTurn,
     makeDraftPick,
+    undoDraftTurn,
+    listDraftMakeupPicks,
+    startDraftMakeupPick,
+    cancelDraftMakeupPick,
     getSeasonTierList,
     patchSeasonTierListSettings,
   } from "../lib/api.js";
@@ -22,6 +26,12 @@
   let loading = true;
   let error = "";
   let msg = "";
+
+  // Make-up picks
+  let makeupOpen = false;
+  let makeupLoading = false;
+  let makeupError = "";
+  let makeupRows = [];
 
   // draft data
   let snapshot = null; // includes snapshot.viewer
@@ -86,21 +96,12 @@
       }, 4000);
   }
 
-  function toNum(v) {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-
   function teamById(id) {
-    const want = toNum(id);
-    if (want == null) return null;
-    return snapshot?.teams?.find((t) => toNum(t.team_id) === want) ?? null;
+    return snapshot?.teams?.find((t) => t.team_id === id) ?? null;
   }
 
   function budgetByTeamId(id) {
-    const want = toNum(id);
-    if (want == null) return null;
-    return snapshot?.budgets?.find((b) => toNum(b.team_id) === want) ?? null;
+    return snapshot?.budgets?.find((b) => b.team_id === id) ?? null;
   }
 
   // -----------------------------
@@ -109,6 +110,7 @@
   $: draftStatus = snapshot?.state?.status ?? null;
   $: orderLocked = draftStatus === "running" || draftStatus === "paused" || draftStatus === "ended";
   $: canEditOrder = !!canEdit && !orderLocked;
+  $: overrideActive = snapshot?.state?.override_active ?? false;
 
   // ---- drafted pokemon helpers ----
   $: draftedSet = new Set(
@@ -284,14 +286,13 @@
 
   $: if (snapshot?.state?.status === "running") {
     startLocalTimer();
+    startPolling();
   } else {
     stopLocalTimer();
+    stopPolling();
   }
 
-  onMount(() => {
-    loadAll();
-    startPolling();
-  });
+  onMount(loadAll);
   onDestroy(() => {
     stopLocalTimer();
     stopPolling();
@@ -473,19 +474,48 @@
     }
   }
 
+  async function openMakeup() {
+    makeupOpen = true;
+    makeupError = "";
+    makeupLoading = true;
+    try {
+      makeupRows = await listDraftMakeupPicks(seasonId);
+    } catch (e) {
+      makeupError = e?.message ?? String(e);
+      makeupRows = [];
+    } finally {
+      makeupLoading = false;
+    }
+  }
+
+  async function chooseMakeupPick(row) {
+    if (!row?.id) return;
+    try {
+      await startDraftMakeupPick(seasonId, row.id);
+      makeupOpen = false;
+      await loadAll({ silent: true });
+      setFlash(`Make-up pick: ${row.coach_name ?? "Coach"} · R${row.round_number ?? "—"}`);
+    } catch (e) {
+      setFlash(e?.message ?? String(e), true);
+    }
+  }
+
+  async function cancelMakeup() {
+    try {
+      await cancelDraftMakeupPick(seasonId);
+      makeupOpen = false;
+      await loadAll({ silent: true });
+      setFlash("Canceled make-up pick override.");
+    } catch (e) {
+      setFlash(e?.message ?? String(e), true);
+    }
+  }
+
   // undo last pick/turn (league master only, while paused)
   async function doUndo() {
     if (!confirm("Undo the last turn? This will remove the last pick/skip.")) return;
     try {
-      const res = await fetch(`/api/seasons/${seasonId}/draft/undo`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Undo failed");
-      }
+      await undoDraftTurn(seasonId);
       mockPickEnabled = false;
       await loadAll({ silent: true });
       setFlash("Undid last turn.");
@@ -493,6 +523,7 @@
       setFlash(e?.message ?? String(e), true);
     }
   }
+
 
   function fmtTime(sec) {
     const s = Math.max(0, sec ?? 0);
@@ -533,7 +564,7 @@
   $: showMockButton = canMockPick;
 
   $: isMyTurn =
-    !!currentTeam && viewerCoachId != null && toNum(currentTeam.coach_id) === toNum(viewerCoachId);
+    !!currentTeam && !!viewerCoachId && currentTeam.coach_id === viewerCoachId;
 
   // Coach-on-clock can always pick.
   // Admin/LM can only pick if mockPickEnabled is ON (one pick).
@@ -931,9 +962,20 @@
               type="button"
               class="btn"
               on:click|preventDefault|stopPropagation={doSkip}
-              disabled={snapshot.state.status === "ended"}
+              disabled={snapshot.state.status === "ended" || overrideActive}
+              title={overrideActive ? "Can't skip while a make-up pick is active" : ""}
             >
               Skip turn
+            </button>
+
+            <button
+              type="button"
+              class="btn"
+              on:click|preventDefault|stopPropagation={overrideActive ? cancelMakeup : openMakeup}
+              disabled={snapshot.state.status === "ended"}
+              title={overrideActive ? "Return to the current pick" : "Fill a previously skipped pick"}
+            >
+              {overrideActive ? "Cancel make-up" : "Make-up pick"}
             </button>
 
             <button
@@ -1029,6 +1071,44 @@
       </section>
     </div>
   {/if}
+{/if}
+
+{#if makeupOpen}
+  <div class="modalBackdrop" on:click={() => (makeupOpen = false)}>
+    <div class="modalCard" on:click|stopPropagation>
+      <div class="modalHeader">
+        <div class="modalTitle">Make-up pick</div>
+        <button class="btn" type="button" on:click={() => (makeupOpen = false)}>Close</button>
+      </div>
+
+      {#if makeupLoading}
+        <div class="muted">Loading…</div>
+      {:else if makeupError}
+        <div class="err">{makeupError}</div>
+      {:else}
+        <div class="muted" style="margin-bottom: 8px;">
+          Select a skipped pick to fill. After the pick is made, the draft will return to the current pick.
+        </div>
+
+        {#if (makeupRows?.length ?? 0) === 0}
+          <div class="muted">No skipped picks found for this draft.</div>
+        {:else}
+          <div class="makeupList">
+            {#each makeupRows as r (r.id)}
+              <button class="makeupItem" type="button" on:click={() => chooseMakeupPick(r)}>
+                <div class="makeupMain">
+                  <div class="makeupCoach">{r.coach_name ?? "(unknown coach)"}</div>
+                  <div class="makeupSub">
+                    Pick #{r.pick_number ?? "—"} · Round {r.round_number ?? "—"}
+                  </div>
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -1431,5 +1511,63 @@
   }
   .pickRound {
     text-align: right;
+  }
+
+  /* modal */
+  .modalBackdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    z-index: 50;
+  }
+  .modalCard {
+    width: min(720px, 100%);
+    background: rgba(12, 18, 38, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    padding: 14px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  .modalHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .modalTitle {
+    font-weight: 900;
+    font-size: 1.1rem;
+  }
+  .makeupList {
+    display: grid;
+    gap: 10px;
+    max-height: 55vh;
+    overflow: auto;
+    padding-right: 4px;
+  }
+  .makeupItem {
+    text-align: left;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    cursor: pointer;
+  }
+  .makeupItem:hover {
+    background: rgba(255, 255, 255, 0.07);
+  }
+  .makeupCoach {
+    font-weight: 900;
+  }
+  .makeupSub {
+    opacity: 0.9;
+    font-size: 0.9rem;
+    margin-top: 2px;
   }
 </style>

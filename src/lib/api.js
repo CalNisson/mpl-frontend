@@ -764,6 +764,31 @@ export async function makeDraftPick(seasonId, payload) {
   return handle(res);
 }
 
+export async function undoDraftTurn(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/undo`, { method: "POST" });
+  return handle(res);
+}
+
+export async function listDraftMakeupPicks(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/makeup`, { method: "GET" });
+  return handle(res);
+}
+
+export async function startDraftMakeupPick(seasonId, draft_pick_id) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/makeup/start`, {
+    method: "POST",
+    body: JSON.stringify({ draft_pick_id: Number(draft_pick_id) }),
+  });
+  return handle(res);
+}
+
+export async function cancelDraftMakeupPick(seasonId) {
+  const res = await apiFetch(`/seasons/${seasonId}/draft/makeup/cancel`, {
+    method: "POST",
+  });
+  return handle(res);
+}
+
 // ----------------------------
 // Season teams (delete) - FIXED
 // ----------------------------
