@@ -8,7 +8,8 @@
     createSeasonTier,
     putTierColumns,
     patchTier,
-    deleteTier
+    deleteTier,
+    lookupPokemonNames
   } from "../lib/api.js";
 
   export let seasonId;
@@ -671,67 +672,118 @@
     }
   }
 
-  async function applyBulkToBucket(bKey, tierId, points) {
-    if (!editable) return;
+async function applyBulkToBucket(bKey, tierId, points) {
+  if (!editable) return;
 
-    const raw = bulkTextByBucketKey?.[bKey] ?? "";
-    const names = parseBulkNames(raw);
+  const raw = bulkTextByBucketKey?.[bKey] ?? "";
+  const names = parseBulkNames(raw);
+  if (!names.length) return;
 
-    if (!names.length) return;
+  const targetTid = Number(tierId);
+  if (!Number.isFinite(targetTid) || targetTid <= 0) {
+    const msg = "Bulk entry failed — invalid target tier.";
+    error = msg;
+    window.alert(msg);
+    return;
+  }
 
-    bulkApplyingByBucketKey = { ...bulkApplyingByBucketKey, [bKey]: true };
+  const targetPts = normPoints(points);
 
-    try {
-      const idx = buildPokemonNameIndex();
+  bulkApplyingByBucketKey = { ...bulkApplyingByBucketKey, [bKey]: true };
 
-      const missing = [];
-      const foundAssignments = [];
+  try {
+    // 1) Resolve names -> pokemon_id from the canonical pokemon table
+    const res = await lookupPokemonNames(names);
+    const found = Array.isArray(res?.found) ? res.found : [];
+    const missing = Array.isArray(res?.missing) ? res.missing : [];
+    const ambiguous = Array.isArray(res?.ambiguous) ? res.ambiguous : [];
 
-      for (const name of names) {
-        const hit = idx.get(norm(name));
-        if (!hit) missing.push(name);
-        else foundAssignments.push(hit);
-      }
-
+    if (missing.length || ambiguous.length) {
+      let msg = "";
       if (missing.length) {
-        const msg =
+        msg +=
           `Bulk entry aborted — couldn't find ${missing.length} Pokémon:\n\n` +
           missing.join("\n");
-        error = msg;
-        window.alert(msg);
-        return;
+      }
+      if (ambiguous.length) {
+        msg +=
+          (msg ? "\n\n" : "") +
+          `Bulk entry aborted — ${ambiguous.length} ambiguous name(s). Please be more specific:\n\n` +
+          ambiguous
+            .map((a) => a?.input ?? "(unknown)")
+            .join("\n");
+      }
+      error = msg;
+      window.alert(msg);
+      return;
+    }
+
+    // 2) Build fast lookup of existing assignments
+    const existingByPid = new Map((assignments ?? []).map((a) => [Number(a.pokemon_id), a]));
+
+    // 3) Apply changes: move if exists, insert if missing
+    const nextPending = { ...pendingByPokemonId };
+    const nextAssignments = (assignments ?? []).slice();
+
+    for (const hit of found) {
+      const pid = Number(hit?.pokemon_id);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+
+      const existing = existingByPid.get(pid);
+
+      // If already in the exact bucket, clear pending and leave as-is
+      if (existing && sameBucket(existing, targetTid, targetPts)) {
+        if (nextPending[pid]) delete nextPending[pid];
+        continue;
       }
 
-      const targetTid = Number(tierId);
-      const targetPts = normPoints(points);
-      const idSet = new Set(foundAssignments.map((a) => Number(a.pokemon_id)));
+      // Queue for save (UPSERT on backend will insert or move)
+      nextPending[pid] = { pokemon_id: pid, tier_id: targetTid, points: targetPts };
 
-      const nextPending = { ...pendingByPokemonId };
-      const nextAssignments = (assignments ?? []).map((a) => {
-        const pid = Number(a.pokemon_id);
-        if (!idSet.has(pid)) return a;
-
-        if (sameBucket(a, targetTid, targetPts)) {
-          if (nextPending[pid]) delete nextPending[pid];
-          return a;
+      if (existing) {
+        // Move existing assignment locally
+        const idx = nextAssignments.findIndex((a) => Number(a.pokemon_id) === pid);
+        if (idx >= 0) {
+          nextAssignments[idx] = { ...nextAssignments[idx], tier_id: targetTid, points: targetPts };
         }
-
-        nextPending[pid] = { pokemon_id: pid, tier_id: targetTid, points: targetPts };
-        return { ...a, tier_id: targetTid, points: targetPts };
-      });
-
-      pendingByPokemonId = nextPending;
-      assignments = nextAssignments;
-
-      await tick();
-      bumpRender();
-      scheduleMeasure();
-
-      closeBulk(bKey);
-    } finally {
-      bulkApplyingByBucketKey = { ...bulkApplyingByBucketKey, [bKey]: false };
+      } else {
+        // Insert new assignment locally so user immediately sees it in the tier
+        nextAssignments.push({
+          pokemon_id: pid,
+          pokemon_name: hit?.pokemon_name ?? null,
+          tier_id: targetTid,
+          points: targetPts,
+          notes: null,
+          dex_number: null,
+          owned_by_team_id: null,
+          owned_by_team_name: null,
+          owned_by_team_abbrev: null,
+          owned_by_team_primary_color: null
+        });
+      }
     }
+
+    pendingByPokemonId = nextPending;
+    assignments = nextAssignments;
+
+    await tick();
+    bumpRender();
+    scheduleMeasure();
+
+    closeBulk(bKey);
+
+    // Optional: if you want immediate persistence without the user hitting Save,
+    // call your existing save routine here instead of just queueing pending.
+    // (I left it queued so it matches the rest of your editor behavior.)
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    error = msg;
+    window.alert(msg);
+  } finally {
+    bulkApplyingByBucketKey = { ...bulkApplyingByBucketKey, [bKey]: false };
   }
+}
+
 
   onMount(load);
 

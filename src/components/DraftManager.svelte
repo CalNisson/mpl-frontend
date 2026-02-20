@@ -57,9 +57,26 @@
   // pick UI
   let pokemonQuery = "";
   let selectedPokemonId = null;
-  let autoTick = null;
   let pollHandle = null;
-  let localSeconds = 0;
+  // Timer syncing:
+  // - Poll the server for authoritative state (including status changes) even while paused.
+  // - Locally animate the countdown while running (without mutating server state).
+  let uiTick = null;
+  let nowMs = Date.now();
+  let serverSeconds = 0;
+  let serverAtMs = Date.now();
+
+  $: localSeconds = (() => {
+    const st = snapshot?.state;
+    if (!st) return 0;
+    const base = Number(serverSeconds ?? 0);
+    if (st.status === "running") {
+      const elapsed = Math.floor((nowMs - serverAtMs) / 1000);
+      return Math.max(0, base - elapsed);
+    }
+    // paused / ended / not_started
+    return Math.max(0, base);
+  })();
 
   // -----------------------------
   // NEW: one-pick mock mode
@@ -243,7 +260,9 @@
       draftType = (snap.settings.draft_type ?? "snake").toLowerCase();
       teamPointTotal = snap.team_point_total ?? 0;
 
-      localSeconds = snap.state.seconds_remaining ?? 0;
+      // seed timer sync
+      serverSeconds = snap.state.seconds_remaining ?? 0;
+      serverAtMs = Date.now();
     } catch (e) {
       error = e?.message ?? String(e);
     } finally {
@@ -251,18 +270,16 @@
     }
   }
 
-  function startLocalTimer() {
-    if (autoTick) return;
-    autoTick = setInterval(() => {
-      if (!snapshot) return;
-      if (snapshot.state.status !== "running") return;
-      localSeconds = Math.max(0, (localSeconds ?? 0) - 1);
-    }, 1000);
+  function startUiTick() {
+    if (uiTick) return;
+    uiTick = setInterval(() => {
+      nowMs = Date.now();
+    }, 250);
   }
 
-  function stopLocalTimer() {
-    if (autoTick) clearInterval(autoTick);
-    autoTick = null;
+  function stopUiTick() {
+    if (uiTick) clearInterval(uiTick);
+    uiTick = null;
   }
 
   function startPolling() {
@@ -271,7 +288,11 @@
       try {
         const snap = await getDraftSnapshot(seasonId);
         snapshot = snap;
-        localSeconds = snap.state.seconds_remaining ?? 0;
+        // Update authoritative timer baseline each poll.
+        // This keeps all users in sync without requiring a refresh,
+        // and prevents "resetting" behavior on pause/resume as long as the backend preserves seconds_remaining.
+        serverSeconds = snap.state.seconds_remaining ?? 0;
+        serverAtMs = Date.now();
 
         // If draft stops running, also disable mock mode to avoid “sticky” state.
         if (snap?.state?.status !== "running") mockPickEnabled = false;
@@ -284,17 +305,15 @@
     pollHandle = null;
   }
 
-  $: if (snapshot?.state?.status === "running") {
-    startLocalTimer();
+  // Always poll so users see start/pause/resume/turn changes without refreshing.
+  // The UI tick handles smooth countdown while running.
+  onMount(() => {
+    startUiTick();
     startPolling();
-  } else {
-    stopLocalTimer();
-    stopPolling();
-  }
-
-  onMount(loadAll);
+    loadAll();
+  });
   onDestroy(() => {
-    stopLocalTimer();
+    stopUiTick();
     stopPolling();
   });
 

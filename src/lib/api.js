@@ -1090,3 +1090,11 @@ export async function passwordResetConfirm(body) {
     }),
   });
 }
+
+export async function lookupPokemonNames(names) {
+  const res = await apiFetch(`/pokemon/lookup_names`, {
+    method: "POST",
+    body: JSON.stringify({ names }),
+  });
+  return handle(res);
+}
