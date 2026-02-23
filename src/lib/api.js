@@ -368,6 +368,18 @@ export async function getAllCoaches() {
   });
 }
 
+
+
+// Coaches limited to the organization for a given season (prevents cross-org leakage)
+export async function getSeasonCoaches(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+  const key = `season-coaches:${leagueKeyFromBits(bits)}:${seasonId}`;
+  return cached(key, async () => {
+    const res = await apiFetch(withLeagueExplicit(`/seasons/${seasonId}/coaches`, bits), { method: "GET" });
+    return handle(res);
+  });
+}
+
 // ----------------------------
 // Season teams (manage season participants)
 // ----------------------------
@@ -1005,6 +1017,38 @@ export async function adminDeleteCoachAccount(body) {
 // NOTE: These endpoints may differ depending on your backend routes.
 // If you named them differently, change the paths here in one place.
 const ORG_INVITES_BASE = "/org_invites";
+
+
+// ---- Organization-scoped Coach Account linking (org_admin) ----
+export async function orgAdminListUsers(orgSlug) {
+  if (!orgSlug) throw new Error("orgAdminListUsers: missing orgSlug");
+  const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/admin/users`, { method: "GET" });
+  return handle(res);
+}
+
+export async function orgAdminListCoaches(orgSlug) {
+  if (!orgSlug) throw new Error("orgAdminListCoaches: missing orgSlug");
+  const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/admin/coaches`, { method: "GET" });
+  return handle(res);
+}
+
+export async function orgAdminUpsertCoachAccount(orgSlug, body) {
+  if (!orgSlug) throw new Error("orgAdminUpsertCoachAccount: missing orgSlug");
+  const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/admin/coach_accounts`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
+
+export async function orgAdminDeleteCoachAccount(orgSlug, body) {
+  if (!orgSlug) throw new Error("orgAdminDeleteCoachAccount: missing orgSlug");
+  const res = await apiFetch(`/organizations/${encodeURIComponent(orgSlug)}/admin/coach_accounts`, {
+    method: "DELETE",
+    body: JSON.stringify(body ?? {}),
+  });
+  return handle(res);
+}
 
 export async function adminListOrgCoaches(orgId) {
   if (orgId == null) throw new Error("adminListOrgCoaches: missing orgId");

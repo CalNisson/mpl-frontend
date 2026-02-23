@@ -1,7 +1,7 @@
 <script>
   import { onMount, createEventDispatcher } from "svelte";
   import {
-    getAllCoaches,
+    getSeasonCoaches,
     getSeasonTeams,
     createSeasonTeam,
     updateSeasonTeam,
@@ -83,7 +83,7 @@
   async function loadCoaches() {
     loadingCoaches = true;
     try {
-      coaches = await getAllCoaches();
+      coaches = await getSeasonCoaches(seasonId);
     } catch {
       coaches = [];
     } finally {

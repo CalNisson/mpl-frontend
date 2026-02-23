@@ -8,7 +8,11 @@
     createLeague,
     adminListOrgInvites,
     adminCreateOrgInvite,
-    adminRevokeOrgInvite
+    adminRevokeOrgInvite,
+    orgAdminListUsers,
+    orgAdminListCoaches,
+    orgAdminUpsertCoachAccount,
+    orgAdminDeleteCoachAccount
   } from "../lib/api.js";
 
   const tokenStore = auth.token;
@@ -50,6 +54,18 @@
   let newLeagueDesc = "";
   let creatingLeague = false;
 
+
+  // Coach linking (org-scoped)
+  let orgLinkingLoading = false;
+  let orgLinkingError = "";
+  let orgUsers = [];
+  let orgCoaches = [];
+  let orgLinks = []; // [{user_id, coach_id, org_id, coach_name}]
+
+  let linkUserId = "";
+  let linkCoachId = "";
+  let linking = false;
+
   // ----------------------------
   // Pending invite filtering
   // ----------------------------
@@ -67,11 +83,103 @@
 
   $: pendingOrgInvites = (orgInvites ?? []).filter(isPendingInvite);
 
+  $: if (showOrgAdmin && isOrgAdmin && (ctx?.organization?.slug ?? "")) {
+    // load users/coaches for linking
+    loadOrgLinkingData();
+  }
+
+
   function resetOrgAdminMessages() {
     orgAdminError = "";
     orgAdminMsg = "";
   }
 
+
+
+  function userLabel(u) {
+    const dn = u?.display_name ? String(u.display_name).trim() : "";
+    const un = u?.username ? String(u.username).trim() : "";
+    const em = u?.email ? String(u.email).trim() : "";
+    if (dn) return `${dn} (${un || em || u.id})`;
+    if (un) return `${un} (${em || u.id})`;
+    return em || `User #${u?.id ?? "?"}`;
+  }
+
+  async function loadOrgLinkingData() {
+    orgLinkingError = "";
+    orgUsers = [];
+    orgCoaches = [];
+    orgLinks = [];
+
+    const orgSlug = ctx?.organization?.slug;
+    if (!token || !orgSlug || !isOrgAdmin || !showOrgAdmin) return;
+
+    orgLinkingLoading = true;
+    try {
+      const usersRes = await orgAdminListUsers(orgSlug);
+      orgUsers = Array.isArray(usersRes?.users) ? usersRes.users : [];
+      orgLinks = Array.isArray(usersRes?.links) ? usersRes.links : [];
+
+      orgCoaches = await orgAdminListCoaches(orgSlug);
+
+      // keep selections valid
+      if (linkUserId && !orgUsers.some((u) => String(u.id) === String(linkUserId))) linkUserId = "";
+      if (linkCoachId && !orgCoaches.some((c) => String(c.id) === String(linkCoachId))) linkCoachId = "";
+
+    } catch (e) {
+      orgLinkingError = e?.message || String(e);
+      orgUsers = [];
+      orgCoaches = [];
+      orgLinks = [];
+    } finally {
+      orgLinkingLoading = false;
+    }
+  }
+
+  async function submitLinkCoach() {
+    resetOrgAdminMessages();
+    orgLinkingError = "";
+
+    const orgSlug = ctx?.organization?.slug;
+    if (!token || !orgSlug) return;
+
+    const uid = Number(linkUserId);
+    const cid = Number(linkCoachId);
+    if (!Number.isFinite(uid) || !Number.isFinite(cid)) {
+      orgLinkingError = "Pick a user and a coach.";
+      return;
+    }
+
+    linking = true;
+    try {
+      await orgAdminUpsertCoachAccount(orgSlug, { user_id: uid, coach_id: cid });
+      orgAdminMsg = "Linked coach to user.";
+      await loadOrgLinkingData();
+    } catch (e) {
+      orgLinkingError = e?.message || String(e);
+    } finally {
+      linking = false;
+    }
+  }
+
+  async function unlinkCoach(userId, coachId) {
+    resetOrgAdminMessages();
+    orgLinkingError = "";
+
+    const orgSlug = ctx?.organization?.slug;
+    if (!token || !orgSlug) return;
+
+    const ok = confirm("Remove this coach link?");
+    if (!ok) return;
+
+    try {
+      await orgAdminDeleteCoachAccount(orgSlug, { user_id: Number(userId), coach_id: Number(coachId) });
+      orgAdminMsg = "Link removed.";
+      await loadOrgLinkingData();
+    } catch (e) {
+      orgLinkingError = e?.message || String(e);
+    }
+  }
   async function loadOrgs() {
     loadingOrgs = true;
     error = "";
@@ -359,45 +467,115 @@
               </button>
             </form>
           </section>
-        </div>
 
-        <section class="panel" style="margin-top: 12px;">
-          <div class="panel-title">Pending org invites</div>
+          <section class="panel panel-col">
+            <div class="panel-title">Link coaches to users</div>
+            <div class="muted" style="margin-top: 6px; font-size:.9rem;">
+              Users are limited to members of this organization. Coaches are limited to coaches in this organization.
+            </div>
 
-          <div class="muted" style="margin-top: 6px; font-size:.9rem;">
-            Showing invites that are not accepted and not expired.
-          </div>
+            {#if orgLinkingLoading}
+              <div class="muted" style="margin-top: 6px;">Loading…</div>
+            {:else if orgLinkingError}
+              <div class="msg err" style="margin-top: 6px;">{orgLinkingError}</div>
+            {:else}
+              <!-- NEW: panel-body wrapper so the scrollbox can fill remaining height -->
+              <div class="panel-body" style="margin-top: 8px;">
+                <div class="form">
+                  <label class="label">User</label>
+                  <select class="select" bind:value={linkUserId}>
+                    <option value="">-- Pick a user --</option>
+                    {#each orgUsers as u (u.id)}
+                      <option value={u.id}>{userLabel(u)}</option>
+                    {/each}
+                  </select>
 
-          {#if (pendingOrgInvites ?? []).length === 0}
-            <div class="muted" style="margin-top: 6px;">No pending invites.</div>
-          {:else}
-            <div class="invite-list">
-              {#each pendingOrgInvites as inv (inv.id)}
-                <div class="invite-row">
-                  <div class="invite-left">
-                    <div class="invite-email">{inv.email}</div>
-                    <div class="muted" style="font-size:.85rem;">
-                      Role: {inv.role}
-                      {#if inv.created_at}
-                        • Created: {inv.created_at}
-                      {/if}
-                      {#if inv.expires_at}
-                        • Expires: {inv.expires_at}
-                      {/if}
+                  <label class="label" style="margin-top: 8px;">Coach</label>
+                  <select class="select" bind:value={linkCoachId}>
+                    <option value="">-- Pick a coach --</option>
+                    {#each orgCoaches as c (c.id)}
+                      <option value={c.id}>{c.name} (#{c.id})</option>
+                    {/each}
+                  </select>
+
+                  <button class="btn primary" type="button" on:click={submitLinkCoach} disabled={linking || !linkUserId || !linkCoachId}>
+                    {linking ? "Linking…" : "Link coach"}
+                  </button>
+                </div>
+
+                <div class="muted" style="margin-top: 10px; font-size:.9rem;">Existing links in this org:</div>
+                {#if (orgLinks ?? []).length === 0}
+                  <div class="muted" style="margin-top: 6px;">No links yet.</div>
+                {:else}
+                  <div class="scroll-box scroll-fill" style="margin-top: 6px;">
+                    <div class="invite-list" style="margin-top: 0;">
+                      {#each orgLinks as l (l.user_id + ':' + l.coach_id)}
+                        <div class="invite-row">
+                          <div class="invite-left">
+                            <div class="invite-email">
+                              {#each orgUsers as u (u.id)}
+                                {#if String(u.id) === String(l.user_id)}
+                                  {userLabel(u)}
+                                {/if}
+                              {/each}
+                            </div>
+                            <div class="muted" style="font-size:.85rem;">
+                              Coach: <span style="font-weight:900;">{l.coach_name}</span> (#{l.coach_id})
+                            </div>
+                          </div>
+                          <button class="btn" on:click={() => unlinkCoach(l.user_id, l.coach_id)}>Unlink</button>
+                        </div>
+                      {/each}
                     </div>
                   </div>
-                  <button class="btn" on:click={() => deleteOrgInvite(inv.id)}>Delete</button>
-                </div>
-              {/each}
+                {/if}
+              </div>
+            {/if}
+          </section>
+
+          <section class="panel panel-col">
+            <div class="panel-title">Pending org invites</div>
+
+            <div class="muted" style="margin-top: 6px; font-size:.9rem;">
+              Showing invites that are not accepted and not expired.
             </div>
-          {/if}
-        </section>
+
+            <!-- NEW: panel-body wrapper so the scrollbox can fill remaining height -->
+            <div class="panel-body" style="margin-top: 8px;">
+              {#if (pendingOrgInvites ?? []).length === 0}
+                <div class="muted">No pending invites.</div>
+              {:else}
+                <div class="scroll-box scroll-fill">
+                  <div class="invite-list" style="margin-top: 0;">
+                    {#each pendingOrgInvites as inv (inv.id)}
+                      <div class="invite-row">
+                        <div class="invite-left">
+                          <div class="invite-email">{inv.email}</div>
+                          <div class="muted" style="font-size:.85rem;">
+                            Role: {inv.role}
+                            {#if inv.created_at}
+                              • Created: {inv.created_at}
+                            {/if}
+                            {#if inv.expires_at}
+                              • Expires: {inv.expires_at}
+                            {/if}
+                          </div>
+                        </div>
+                        <button class="btn" on:click={() => deleteOrgInvite(inv.id)}>Delete</button>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+            </div>
+          </section>
+        </div>
       </div>
     {/if}
   {/if}
 
   {#if error}
-    <div class="error">⚠ {error}</div>
+    <div class="error">{error}</div>
   {/if}
 </div>
 
@@ -520,6 +698,14 @@
     margin-bottom: 8px;
   }
 
+  /* Panels that should stretch to the tallest item in a grid row */
+  .panel-col {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0; /* required so inner scroll areas can flex */
+  }
+
   .form {
     display: flex;
     flex-direction: column;
@@ -565,6 +751,40 @@
     flex-direction: column;
     gap: 8px;
   }
+
+  /* Panels that should support an internal scroll region */
+  .panel-col {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+
+    /* ✅ This is what makes scrollbars possible */
+    max-height: 70vh;           /* adjust if you want (65–75vh feels good) */
+  }
+
+  /* Wrapper that contains form + scroll box */
+  .panel-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;              /* ✅ critical */
+  }
+
+  /* Base scroll box */
+  .scroll-box {
+    overflow: auto;
+    padding: 8px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  /* “Fill remaining height” scroll box */
+  .scroll-box.scroll-fill {
+    flex: 1;
+    min-height: 0;              /* ✅ critical */
+  }
+
   .invite-row {
     display: flex;
     justify-content: space-between;
@@ -577,5 +797,24 @@
   }
   .invite-email {
     font-weight: 900;
+  }
+
+  .org-admin-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  .org-admin-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .scroll-area {
+    flex: 1;
+    min-height: 0;      /* CRITICAL for flex scrolling */
+    overflow-y: auto;   /* <-- THIS restores the scrollbar */
+    padding-right: 0.25rem;
   }
 </style>
