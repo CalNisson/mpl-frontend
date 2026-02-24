@@ -788,6 +788,30 @@
     return p;
   }
 
+  function classicSeedOrder(targetSize) {
+    // Returns the vertical slot order for a classic seeded bracket of size targetSize.
+    // Example (16): [1,16,8,9,5,12,4,13,6,11,3,14,7,10,2,15]
+    let order = [1, 2];
+    let cur = 2;
+    while (cur < targetSize) {
+      const next = [];
+      for (const s of order) {
+        next.push(s);
+        next.push(cur * 2 + 1 - s);
+      }
+      order = next;
+      cur *= 2;
+    }
+    return order;
+  }
+
+  function firstRoundSeedPairs(targetSize) {
+    const order = classicSeedOrder(targetSize);
+    const pairs = [];
+    for (let i = 0; i < order.length; i += 2) pairs.push([order[i], order[i + 1]]);
+    return pairs;
+  }
+
   function teamLabel(t) {
     if (!t) return "TBD";
     const name = t?.team_name ?? "Team";
@@ -799,15 +823,16 @@
     const n = qualified.length;
     const size = nextPow2(n);
 
-    const slots = [];
-    for (let s = 1; s <= size; s++) {
-      slots.push(qualified.find((t) => t._seed === s) ?? null);
+    const bySeed = new Map();
+    for (const t of qualified) bySeed.set(t._seed, t);
+
+    function teamOrNull(seed) {
+      return bySeed.get(seed) ?? null;
     }
 
-    const firstRoundPairs = [];
-    for (let i = 0; i < size / 2; i++) {
-      firstRoundPairs.push([slots[i], slots[size - 1 - i]]);
-    }
+    // IMPORTANT: build the first round in classic bracket order (not strict seed order),
+    // so the preview lays out seeds correctly even when there are many BYEs (e.g. 18 -> 32).
+    const firstRoundPairs = firstRoundSeedPairs(size).map(([a, b]) => [teamOrNull(a), teamOrNull(b)]);
 
     const rounds = [];
     const roundNames = [];
