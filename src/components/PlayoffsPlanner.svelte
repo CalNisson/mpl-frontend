@@ -812,6 +812,54 @@
     return pairs;
   }
 
+
+  // Reorder first-round matches for a more "aesthetic" bracket layout where
+  // top seeds appear to "approach" each other from the outside toward the center.
+  // This does NOT change matchups; it only changes display order (and optional side orientation).
+  function approachMatchOrder(pairs) {
+    const n = pairs.length;
+    if (n <= 2) return pairs;
+
+    // Split into 4 equal chunks (quarters of this region)
+    const q = n / 4;
+    const q0 = pairs.slice(0, q);
+    const q1 = pairs.slice(q, 2 * q);
+    const q2 = pairs.slice(2 * q, 3 * q);
+    const q3 = pairs.slice(3 * q);
+
+    // Recursively process each chunk
+    const r0 = approachMatchOrder(q0);
+    const r1 = approachMatchOrder(q1);
+    const r2 = approachMatchOrder(q2);
+    const r3 = approachMatchOrder(q3);
+
+    // First apply the "approach" snake pattern
+    const ordered = [
+      ...r0,
+      ...r1.reverse(),
+      ...r2,
+      ...r3.reverse(),
+    ];
+
+    // ✅ Then mirror the bottom half for bracket aesthetics
+    const half = ordered.length / 2;
+    return [
+      ...ordered.slice(0, half),
+      ...ordered.slice(half).reverse(),
+    ];
+  }
+
+  // Optionally flip which side/top renders first on alternating rows to enhance the "approach" look.
+  // Keeps BYEs/unknowns stable.
+  function orientPairsForApproach(pairs) {
+    return pairs.map((pair, idx) => {
+      const [a, b] = pair;
+      if (!a || !b) return pair;
+      const flip = idx % 2 === 1;
+      return flip ? [b, a] : pair;
+    });
+  }
+
   function teamLabel(t) {
     if (!t) return "TBD";
     const name = t?.team_name ?? "Team";
@@ -821,7 +869,28 @@
 
   function buildStandardPlayoffs(qualified) {
     const n = qualified.length;
-    const size = nextPow2(n);
+
+    function isPow2(x) {
+      return x > 0 && (x & (x - 1)) === 0;
+    }
+
+    function prevPow2(x) {
+      let p = 1;
+      while (p * 2 <= x) p *= 2;
+      return p;
+    }
+
+    // Base bracket size:
+    // - if already power of two: use n
+    // - otherwise: drop to previous power of two and use play-ins to get down to base
+    const baseSize = isPow2(n) ? n : prevPow2(n);
+
+    // How many teams must be eliminated to reach baseSize
+    const excess = n - baseSize;
+
+    // Teams that get byes directly into base bracket:
+    // Example: n=18, base=16, excess=2 => byeCount=14 => seeds 1..14 are "in", 15..18 play in
+    const byeCount = baseSize - excess;
 
     const bySeed = new Map();
     for (const t of qualified) bySeed.set(t._seed, t);
@@ -830,21 +899,24 @@
       return bySeed.get(seed) ?? null;
     }
 
-    // IMPORTANT: build the first round in classic bracket order (not strict seed order),
-    // so the preview lays out seeds correctly even when there are many BYEs (e.g. 18 -> 32).
-    const firstRoundPairs = firstRoundSeedPairs(size).map(([a, b]) => [teamOrNull(a), teamOrNull(b)]);
-
-    const rounds = [];
+    // -------------------------
+    // Round names
+    // -------------------------
     const roundNames = [];
-    if (size === 2) roundNames.push("Finals");
-    else if (size === 4) roundNames.push("Semifinals", "Finals");
-    else if (size === 8) roundNames.push("Quarterfinals", "Semifinals", "Finals");
-    else if (size === 16) roundNames.push("Round of 16", "Quarterfinals", "Semifinals", "Finals");
-    else if (size === 32)
+    if (excess > 0) {
+      roundNames.push("Play-In");
+    }
+
+    // Names for the base bracket and beyond
+    if (baseSize === 2) roundNames.push("Finals");
+    else if (baseSize === 4) roundNames.push("Semifinals", "Finals");
+    else if (baseSize === 8) roundNames.push("Quarterfinals", "Semifinals", "Finals");
+    else if (baseSize === 16) roundNames.push("Round of 16", "Quarterfinals", "Semifinals", "Finals");
+    else if (baseSize === 32)
       roundNames.push("Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Finals");
     else {
-      roundNames.push(`Round of ${size}`);
-      let cur = size / 2;
+      roundNames.push(`Round of ${baseSize}`);
+      let cur = baseSize / 2;
       while (cur >= 2) {
         if (cur === 2) roundNames.push("Finals");
         else roundNames.push(`Round of ${cur}`);
@@ -852,41 +924,163 @@
       }
     }
 
-    const r0 = firstRoundPairs.map((pair, idx) => ({
-      id: `P-R0-M${idx + 1}`,
-      phase: "playoffs",
-      roundIndex: 0,
-      slotIndex: idx,
-      label: roundNames[0] ? `${roundNames[0]} M${idx + 1}` : `Match ${idx + 1}`,
-      players: pair.map((t, pi) => ({
-        id: t?.id ?? `bye-${idx}-${pi}`,
-        teamId: t?.id ?? null,
-        name: t ? teamLabel(t) : "BYE",
+    const rounds = [];
+
+    // -------------------------
+    // Helper: opponent seed in play-in for a given base seed slot
+    // -------------------------
+    function playInOpponentSeed(baseSeed) {
+      // baseSeed runs from byeCount+1..baseSize
+      // opponents are the highest remaining seeds: n, n-1, ...
+      const i = baseSeed - (byeCount + 1); // 0-based
+      return n - i;
+    }
+
+    // -------------------------
+    // Build Base bracket Round 1 seed slots (in *approaching* order)
+    // We build the base round slot order first, then create play-ins in that same order so:
+    // - Play-In M# labels match the displayed bracket order
+    // - "approaching" aesthetics are consistent for all base sizes (including <16)
+    // -------------------------
+    let baseSeedPairs = firstRoundSeedPairs(baseSize).map(([a, b]) => [a, b]);
+    baseSeedPairs = approachMatchOrder(baseSeedPairs);
+    baseSeedPairs = orientPairsForApproach(baseSeedPairs);
+
+    // -------------------------
+    // Build Play-Ins on demand in slot order, and placeholders by seed
+    // -------------------------
+    const playInMatches = [];
+    const placeholderBySeed = new Map(); // seed -> placeholder object
+
+    function ensurePlaceholderForSeed(seed, targetMatchId, targetSlotIndex0based) {
+      // Direct seeds
+      if (seed <= byeCount) return teamOrNull(seed);
+
+      // Already built
+      if (placeholderBySeed.has(seed)) return placeholderBySeed.get(seed);
+
+      const oppSeed = playInOpponentSeed(seed);
+
+      const a = teamOrNull(seed);
+      const b = teamOrNull(oppSeed);
+
+      // Orient so the base seed appears on the same side (top/bottom) as its placeholder
+      // in the downstream base match slot.
+      const baseOnTop = targetSlotIndex0based === 0;
+      const pair = baseOnTop ? [a, b] : [b, a];
+
+      const idx = playInMatches.length;
+      const m = {
+        id: `P-R0-M${idx + 1}`,
+        phase: "playoffs",
+        roundIndex: 0,
+        slotIndex: idx,
+        label: `${roundNames[0]} M${idx + 1}`,
+        players: [
+          {
+            id: pair[0]?.id ?? `tbd-playin-${idx}-0`,
+            teamId: pair[0]?.id ?? null,
+            name: pair[0] ? teamLabel(pair[0]) : "TBD",
+            score: ""
+          },
+          {
+            id: pair[1]?.id ?? `tbd-playin-${idx}-1`,
+            teamId: pair[1]?.id ?? null,
+            name: pair[1] ? teamLabel(pair[1]) : "TBD",
+            score: ""
+          }
+        ],
+        nextMatchId: targetMatchId,
+        nextSlot: targetSlotIndex0based === 0 ? 1 : 2
+      };
+
+      playInMatches.push(m);
+
+      const placeholder = {
+        id: `playinW-seed-${seed}`,
+        teamId: null,
+        name: `Winner of ${m.label}`,
         score: "",
-        _sourcePlayinMatchId: t?._sourcePlayinMatchId ?? null // optional
-      })),
-      nextMatchId: null,
-      nextSlot: null
-    }));
+        _sourcePlayinMatchId: m.id
+      };
 
-    rounds.push({ name: roundNames[0] ?? "Round 1", index: 0, matches: r0 });
+      placeholderBySeed.set(seed, placeholder);
+      return placeholder;
+    }
 
-    let prevCount = r0.length;
-    let roundIdx = 1;
+    // -------------------------
+    // Build Base bracket Round 1 (Round of baseSize)
+    // -------------------------
+    const baseRoundIndex = excess > 0 ? 1 : 0;
+    const baseRoundNameIndex = excess > 0 ? 1 : 0;
+
+    const baseRoundMatches = baseSeedPairs.map(([sa, sb], idx) => {
+      const matchId = `P-R${baseRoundIndex}-M${idx + 1}`;
+
+      const p0 = sa <= byeCount ? teamOrNull(sa) : ensurePlaceholderForSeed(sa, matchId, 0);
+      const p1 = sb <= byeCount ? teamOrNull(sb) : ensurePlaceholderForSeed(sb, matchId, 1);
+
+      const players = [p0, p1].map((t, pi) => {
+        if (!t) {
+          return {
+            id: `tbd-${baseRoundIndex}-${idx}-${pi}`,
+            teamId: null,
+            name: "TBD",
+            score: ""
+          };
+        }
+        return {
+          id: t.id ?? `tbd-${baseRoundIndex}-${idx}-${pi}`,
+          teamId: t.teamId ?? t.id ?? null,
+          name: t.name ?? (t ? teamLabel(t) : "TBD"),
+          score: ""
+        };
+      });
+
+      return {
+        id: matchId,
+        phase: "playoffs",
+        roundIndex: baseRoundIndex,
+        slotIndex: idx,
+        label: roundNames[baseRoundNameIndex]
+          ? `${roundNames[baseRoundNameIndex]} M${idx + 1}`
+          : `Match ${idx + 1}`,
+        players,
+        nextMatchId: null,
+        nextSlot: null
+      };
+    });
+
+    // -------------------------
+    // Push Play-In round (if needed)
+    // -------------------------
+    if (excess > 0) {
+      rounds.push({ name: roundNames[0], index: 0, matches: playInMatches });
+    }
+
+    rounds.push({
+      name: roundNames[baseRoundNameIndex] ?? `Round of ${baseSize}`,
+      index: baseRoundIndex,
+      matches: baseRoundMatches
+    });
+
+    // -------------------------
+    // Build remaining rounds
+    // -------------------------
+    let prevCount = baseRoundMatches.length;
+    let roundIdx = baseRoundIndex + 1;
 
     while (prevCount >= 2) {
       const count = prevCount / 2;
-      const matches = [];
 
+      const matches = [];
       for (let i = 0; i < count; i++) {
         matches.push({
           id: `P-R${roundIdx}-M${i + 1}`,
           phase: "playoffs",
           roundIndex: roundIdx,
           slotIndex: i,
-          label: roundNames[roundIdx]
-            ? `${roundNames[roundIdx]} M${i + 1}`
-            : `Round ${roundIdx + 1} M${i + 1}`,
+          label: roundNames[roundIdx] ? `${roundNames[roundIdx]} M${i + 1}` : `Match ${i + 1}`,
           players: [
             { id: `tbd-${roundIdx}-${i}-a`, teamId: null, name: "TBD", score: "" },
             { id: `tbd-${roundIdx}-${i}-b`, teamId: null, name: "TBD", score: "" }
@@ -896,15 +1090,13 @@
         });
       }
 
-      rounds.push({
-        name: roundNames[roundIdx] ?? `Round ${roundIdx + 1}`,
-        index: roundIdx,
-        matches
-      });
+      rounds.push({ name: roundNames[roundIdx] ?? `Round ${roundIdx + 1}`, index: roundIdx, matches });
 
+      // Wire previous round winners into this round
+      const prevRound = rounds.find((r) => r.index === roundIdx - 1);
       for (let i = 0; i < prevCount; i++) {
-        const from = rounds[roundIdx - 1].matches[i];
-        const to = rounds[roundIdx].matches[Math.floor(i / 2)];
+        const from = prevRound.matches[i];
+        const to = matches[Math.floor(i / 2)];
         from.nextMatchId = to.id;
         from.nextSlot = i % 2 === 0 ? 1 : 2;
       }
@@ -916,226 +1108,386 @@
     return rounds;
   }
 
-  function buildWeightedByesPlayoffs(qualified) {
-    // unchanged (your existing code)
-    const n = qualified.length;
-    if (n <= 2) return buildStandardPlayoffs(qualified);
+function buildWeightedByesPlayoffs(qualified) {
+  const n = qualified.length;
 
-    const size = nextPow2(n);
-    const allowDoubleBye = n > (3 * size) / 4;
-    if (!allowDoubleBye) return buildStandardPlayoffs(qualified);
+  function isPow2(x) {
+    return x > 0 && (x & (x - 1)) === 0;
+  }
+  function prevPow2(x) {
+    let p = 1;
+    while (p * 2 <= x) p *= 2;
+    return p;
+  }
 
-    const bySeed = new Map();
-    for (const t of qualified) bySeed.set(t._seed, t);
+  // Weighted-by-byes only makes sense for a 16+ base bracket (two bye tiers).
+  // For smaller fields (<= 15, base=8), fall back to Standard (with pigtails if needed).
+  const base = isPow2(n) ? n : prevPow2(n);
+  if (base < 16) return buildStandardPlayoffs(qualified);
 
-    function teamOrNull(seed) {
-      return bySeed.get(seed) ?? null;
-    }
+  const excess = n - base;              // teams above the base (e.g. 18 -> 2)
+  const half = base / 2;                // seeds 1..half get at least a bye vs bottom half
+  const q = base / 4;                   // top quarter gets a second bye in weighted format
 
-    function classicSeedOrder(targetSize) {
-      let order = [1, 2];
-      let cur = 2;
-      while (cur < targetSize) {
-        const next = [];
-        for (const s of order) {
-          next.push(s);
-          next.push(cur * 2 + 1 - s);
-        }
-        order = next;
-        cur *= 2;
-      }
-      return order;
-    }
+  const bySeed = new Map();
+  for (const t of qualified) bySeed.set(t._seed, t);
 
-    function firstRoundPairOrder(targetSize) {
-      const order = classicSeedOrder(targetSize);
-      const pairs = [];
-      for (let i = 0; i < order.length; i += 2) pairs.push([order[i], order[i + 1]]);
-      return pairs;
-    }
+  function teamOrNull(seed) {
+    return bySeed.get(seed) ?? null;
+  }
 
-    function seedToVerticalIndex(targetSize) {
-      const pairs = firstRoundPairOrder(targetSize);
-      const m = new Map();
-      pairs.forEach((pair, idx) => {
-        const anchor = Math.min(pair[0], pair[1]);
-        m.set(anchor, idx);
+  // -----------------------------
+  // Helpers for display ordering
+  // -----------------------------
+  function approachOrderItems(items) {
+    const m = items.length;
+    if (m <= 2) return items;
+
+    const chunk = m / 4;
+    const a = approachOrderItems(items.slice(0, chunk));
+    const b = approachOrderItems(items.slice(chunk, 2 * chunk)).reverse();
+    const c = approachOrderItems(items.slice(2 * chunk, 3 * chunk));
+    const d = approachOrderItems(items.slice(3 * chunk)).reverse();
+
+    const ordered = [...a, ...b, ...c, ...d];
+
+    // mirror bottom half (matches the same visual convention as Standard)
+    const h = ordered.length / 2;
+    return [...ordered.slice(0, h), ...ordered.slice(h).reverse()];
+  }
+
+  function stageNameFromTeams(teamCount) {
+    if (teamCount === 2) return "Finals";
+    if (teamCount === 4) return "Semifinals";
+    if (teamCount === 8) return "Quarterfinals";
+    if (teamCount === 16) return "Round of 16";
+    if (teamCount === 32) return "Round of 32";
+    return `Round of ${teamCount}`;
+  }
+
+  const rounds = [];
+
+  // ------------------------------------------------------------
+  // 0) Pigtails if n > base:
+  // Replace the *lowest* base seeds with play-in winners:
+  // (base vs base+1), (base-1 vs base+2), ...
+  // Winner "becomes" the replaced base seed (base-i).
+  // Example 19 (base16): 16v17, 15v18, 14v19 (bottom 6 seeds participate).
+  // ------------------------------------------------------------
+  const seedReplacement = new Map(); // seed -> placeholder player object
+  let playInRound = null;
+
+  // We'll orient play-ins after we know which side the replaced seed sits on in Weighted R1.
+  const rawPlayIns = [];
+  if (excess > 0) {
+    for (let i = 0; i < excess; i++) {
+      rawPlayIns.push({
+        replacedSeed: base - i,
+        extraSeed: base + 1 + i
       });
-      return m;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 1) Build regions (groups of 4 seeds) from classicSeedOrder(base).
+  // Each region contains:
+  // - one top-quarter seed (<= q)         [double-bye]
+  // - one next-quarter seed (q+1..half)   [single-bye]
+  // - two bottom-half seeds (> half)      [play Weighted R1]
+  // ------------------------------------------------------------
+  const order = classicSeedOrder(base);
+  let regions = [];
+
+  for (let i = 0; i < order.length; i += 4) {
+    const group = order.slice(i, i + 4);
+
+    const topSeed = Math.min(...group); // should be in 1..q
+    const entrantSeed = group.find((s) => s > q && s <= half);
+    const bottoms = group.filter((s) => s > half);
+
+    if (!entrantSeed || bottoms.length !== 2) {
+      return buildStandardPlayoffs(qualified);
     }
 
-    const verticalIndexByAnchor = seedToVerticalIndex(size);
+    const bottomA = Math.min(bottoms[0], bottoms[1]);
+    const bottomB = Math.max(bottoms[0], bottoms[1]);
 
-    function slotFromTeam(t) {
-      return t ? { kind: "team", team: t } : null;
-    }
-    function slotFromMatch(m) {
-      return { kind: "match", match: m };
-    }
-    function slotLabel(slot) {
-      if (!slot) return "BYE";
-      if (slot.kind === "team") return teamLabel(slot.team);
-      return `Winner (${slot.match.label})`;
-    }
-    function slotId(slot, fallback) {
-      if (!slot) return fallback;
-      if (slot.kind === "team") return slot.team?.id ?? fallback;
-      return `W:${slot.match.id}`;
-    }
-    function slotTeamId(slot) {
-      if (!slot) return null;
-      if (slot.kind !== "team") return null;
-      return slot.team?.id ?? null;
-    }
-    function slotSeed(slot) {
-      if (!slot) return null;
-      if (slot.kind !== "team") return null;
-      const s = slot.team?._seed ?? null;
-      return Number.isFinite(s) ? s : null;
-    }
+    regions.push({ topSeed, entrantSeed, bottomA, bottomB });
+  }
 
-    let idCounter = 1;
+  // ------------------------------------------------------------
+  // 2) Apply "approaching" ordering to regions
+  // ------------------------------------------------------------
+  const regionItems = regions.map((reg) => ({ reg }));
+  regions = approachOrderItems(regionItems).map((it) => it.reg);
 
-    function mkMatch(roundIndex, slotIndex, label, slotA, slotB, phase) {
-      const id = `W-R${roundIndex}-M${idCounter++}`;
+  // ------------------------------------------------------------
+  // 3) Determine where each bottom seed appears in Weighted R1 (top/bottom slot)
+  // ------------------------------------------------------------
+  const seedToR1Side = new Map(); // seed -> 0 (top) or 1 (bottom)
+  for (let idx = 0; idx < regions.length; idx++) {
+    const reg = regions[idx];
+    let s0 = reg.bottomA;
+    let s1 = reg.bottomB;
+    const flip = (idx % 2) === 1;
+    if (flip) [s0, s1] = [s1, s0];
+    seedToR1Side.set(s0, 0);
+    seedToR1Side.set(s1, 1);
+  }
 
-      const sa = slotSeed(slotA);
-      const sb = slotSeed(slotB);
+  // ------------------------------------------------------------
+  // 4) Create Play-In round (oriented to match downstream slot), and seed replacements
+  // ------------------------------------------------------------
+  if (rawPlayIns.length > 0) {
+    const playInMatches = [];
 
-      let top = slotA;
-      let bot = slotB;
+    for (let i = 0; i < rawPlayIns.length; i++) {
+      const { replacedSeed, extraSeed } = rawPlayIns[i];
 
-      if (sa != null && sb != null && sa > sb) {
-        top = slotB;
-        bot = slotA;
-      } else if (sa == null && sb != null) {
-        top = slotB;
-        bot = slotA;
-      }
+      const side = seedToR1Side.get(replacedSeed) ?? 1; // default bottom
+      const replaced = teamOrNull(replacedSeed);
+      const extra = teamOrNull(extraSeed);
 
-      const match = {
-        id,
-        phase,
-        roundIndex,
-        slotIndex,
-        label,
+      const pair = side === 0 ? [replaced, extra] : [extra, replaced];
+
+      const m = {
+        id: `W-R0-M${i + 1}`,
+        phase: "playoffs",
+        roundIndex: 0,
+        slotIndex: i,
+        label: `Play-In M${i + 1}`,
         players: [
-          { id: slotId(top, `tbd-${id}-a`), teamId: slotTeamId(top), name: slotLabel(top), score: "" },
-          { id: slotId(bot, `tbd-${id}-b`), teamId: slotTeamId(bot), name: slotLabel(bot), score: "" }
+          {
+            id: pair[0]?.id ?? `tbd-playin-${i}-a`,
+            teamId: pair[0]?.id ?? null,
+            name: pair[0] ? teamLabel(pair[0]) : "TBD",
+            score: ""
+          },
+          {
+            id: pair[1]?.id ?? `tbd-playin-${i}-b`,
+            teamId: pair[1]?.id ?? null,
+            name: pair[1] ? teamLabel(pair[1]) : "TBD",
+            score: ""
+          }
         ],
         nextMatchId: null,
         nextSlot: null
       };
 
-      if (top?.kind === "match") {
-        top.match.nextMatchId = match.id;
-        top.match.nextSlot = 1;
-      }
-      if (bot?.kind === "match") {
-        bot.match.nextMatchId = match.id;
-        bot.match.nextSlot = 2;
-      }
+      playInMatches.push(m);
 
-      return match;
-    }
-
-    function playOrAdvance(roundIndex, slotIndex, label, slotA, slotB, roundBuckets) {
-      if (slotA && !slotB) return slotA;
-      if (!slotA && slotB) return slotB;
-      if (!slotA && !slotB) return null;
-
-      const m = mkMatch(roundIndex, slotIndex, label, slotA, slotB, "playoffs");
-      roundBuckets[roundIndex].push(m);
-      return slotFromMatch(m);
-    }
-
-    const order = classicSeedOrder(size);
-
-    const pods = [];
-    for (let i = 0; i < order.length; i += 4) {
-      const chunk = order.slice(i, i + 4);
-      const present = chunk.map((s) => (s <= n ? s : null)).filter((s) => s != null);
-      if (!present.length) continue;
-
-      const seedsSorted = present.slice().sort((a, b) => a - b);
-      const topSeed = seedsSorted[0];
-      pods.push({ chunk, topSeed });
-    }
-
-    pods.sort((a, b) => {
-      const ia = verticalIndexByAnchor.get(a.topSeed) ?? 9999;
-      const ib = verticalIndexByAnchor.get(b.topSeed) ?? 9999;
-      return ia - ib;
-    });
-
-    const buckets = { 0: [], 1: [], 2: [], 3: [], 4: [] };
-    const podFinalSlots = [];
-
-    for (let podSlot = 0; podSlot < pods.length; podSlot++) {
-      const { chunk } = pods[podSlot];
-
-      const present = chunk.map((s) => (s <= n ? s : null)).filter((s) => s != null);
-      if (!present.length) continue;
-
-      const seedsSorted = present.slice().sort((a, b) => a - b);
-      const topSeed = seedsSorted[0];
-      const midSeed = seedsSorted[1] ?? null;
-      const lows = seedsSorted.slice(2);
-
-      let lowASeed = lows[0] ?? null;
-      let lowBSeed = lows.length >= 2 ? lows[lows.length - 1] : null;
-
-      if (lowASeed != null && lowBSeed != null && lowASeed < lowBSeed) {
-        const tmp = lowASeed;
-        lowASeed = lowBSeed;
-        lowBSeed = tmp;
-      }
-
-      const lowA = slotFromTeam(lowASeed != null ? teamOrNull(lowASeed) : null);
-      const lowB = slotFromTeam(lowBSeed != null ? teamOrNull(lowBSeed) : null);
-      const mid = slotFromTeam(midSeed != null ? teamOrNull(midSeed) : null);
-      const top = slotFromTeam(teamOrNull(topSeed));
-
-      const r1Winner = playOrAdvance(0, podSlot, `Weighted • Round 1 M${podSlot + 1}`, lowA, lowB, buckets);
-      const r2Winner = playOrAdvance(1, podSlot, `Weighted • Round 2 M${podSlot + 1}`, r1Winner, mid, buckets);
-      const podWinner = playOrAdvance(2, podSlot, `Weighted • Round 3 M${podSlot + 1}`, r2Winner, top, buckets);
-
-      if (podWinner) podFinalSlots.push(podWinner);
-    }
-
-    const semiWinners = [];
-    for (let i = 0; i < podFinalSlots.length; i += 2) {
-      const a = podFinalSlots[i] ?? null;
-      const b = podFinalSlots[i + 1] ?? null;
-      const w = playOrAdvance(3, Math.floor(i / 2), `Semifinal ${Math.floor(i / 2) + 1}`, a, b, buckets);
-      if (w) semiWinners.push(w);
-    }
-
-    playOrAdvance(4, 0, "Finals", semiWinners[0] ?? null, semiWinners[1] ?? null, buckets);
-
-    const rawRounds = [];
-    if (buckets[0].length) rawRounds.push({ name: "Weighted Round 1", key: 0, matches: buckets[0] });
-    if (buckets[1].length) rawRounds.push({ name: "Weighted Round 2", key: 1, matches: buckets[1] });
-    if (buckets[2].length) rawRounds.push({ name: "Weighted Round 3", key: 2, matches: buckets[2] });
-
-    if (buckets[3].length) {
-      rawRounds.push({
-        name: buckets[3].length === 1 ? "Finals" : "Semifinals",
-        key: 3,
-        matches: buckets[3]
+      seedReplacement.set(replacedSeed, {
+        id: `playinW-seed-${replacedSeed}`,
+        teamId: null,
+        name: `Winner of ${m.label}`,
+        score: "",
+        _sourcePlayinMatchId: m.id
       });
     }
-    if (buckets[4].length) rawRounds.push({ name: "Finals", key: 4, matches: buckets[4] });
 
-    if (!rawRounds.length) return buildStandardPlayoffs(qualified);
-
-    const rounds = rawRounds.map((r, newIdx) => {
-      for (const m of r.matches) m.roundIndex = newIdx;
-      return { name: r.name, index: newIdx, matches: r.matches };
-    });
-
-    return rounds;
+    playInRound = { name: "Play-In", index: 0, matches: playInMatches };
+    rounds.push(playInRound);
   }
+
+  function teamOrReplacement(seed) {
+    if (seedReplacement.has(seed)) return seedReplacement.get(seed);
+    return teamOrNull(seed);
+  }
+
+  const r1Index = playInRound ? 1 : 0;
+  const r2Index = r1Index + 1;
+  const r3Index = r1Index + 2;
+
+  // ------------------------------------------------------------
+  // 5) Weighted R1: bottom vs bottom (one per region)
+  // ------------------------------------------------------------
+  const r1Matches = regions.map((reg, idx) => {
+    const flip = (idx % 2) === 1;
+    let topSeed = reg.bottomA;
+    let botSeed = reg.bottomB;
+    if (flip) [topSeed, botSeed] = [botSeed, topSeed];
+
+    const a = teamOrReplacement(topSeed);
+    const b = teamOrReplacement(botSeed);
+
+    return {
+      id: `W-R${r1Index}-M${idx + 1}`,
+      phase: "playoffs",
+      roundIndex: r1Index,
+      slotIndex: idx,
+      label: `${stageNameFromTeams(base)} - Weighted R1 M${idx + 1}`,
+      players: [
+        {
+          id: a?.id ?? `seed-${topSeed}`,
+          teamId: a?.teamId ?? a?.id ?? null,
+          name: a ? (a.name ?? teamLabel(a)) : `Seed ${topSeed}`,
+          score: "",
+          _sourcePlayinMatchId: a?._sourcePlayinMatchId ?? null
+        },
+        {
+          id: b?.id ?? `seed-${botSeed}`,
+          teamId: b?.teamId ?? b?.id ?? null,
+          name: b ? (b.name ?? teamLabel(b)) : `Seed ${botSeed}`,
+          score: "",
+          _sourcePlayinMatchId: b?._sourcePlayinMatchId ?? null
+        }
+      ],
+      nextMatchId: null,
+      nextSlot: null
+    };
+  });
+
+  rounds.push({ name: "Weighted R1", index: r1Index, matches: r1Matches });
+
+  // Wire play-in matches into the exact R1 match/slot where their placeholder appears
+  if (playInRound) {
+    for (const pm of playInRound.matches) {
+      for (const wm of r1Matches) {
+        for (let pi = 0; pi < 2; pi++) {
+          const p = wm.players[pi];
+          if (p && p._sourcePlayinMatchId === pm.id) {
+            pm.nextMatchId = wm.id;
+            pm.nextSlot = pi === 0 ? 1 : 2;
+          }
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 6) Weighted R2: entrant vs winner of its region’s R1
+  // even idx: Winner(R1) top, entrant bottom
+  // odd idx:  entrant top, Winner(R1) bottom
+  // ------------------------------------------------------------
+  const r2Matches = regions.map((reg, idx) => {
+    const entrant = teamOrReplacement(reg.entrantSeed);
+    const feeder = r1Matches[idx];
+
+    const entrantPlayer = {
+      id: entrant?.id ?? `seed-${reg.entrantSeed}`,
+      teamId: entrant?.teamId ?? entrant?.id ?? null,
+      name: entrant ? (entrant.name ?? teamLabel(entrant)) : `Seed ${reg.entrantSeed}`,
+      score: ""
+    };
+
+    const winnerPlayer = {
+      id: `winner-${feeder.id}`,
+      teamId: null,
+      name: `Winner of ${feeder.id}`,
+      score: ""
+    };
+
+    const winnerOnTop = (idx % 2) === 0;
+    const players = winnerOnTop ? [winnerPlayer, entrantPlayer] : [entrantPlayer, winnerPlayer];
+
+    feeder.nextMatchId = `W-R${r2Index}-M${idx + 1}`;
+    feeder.nextSlot = winnerOnTop ? 1 : 2;
+
+    return {
+      id: `W-R${r2Index}-M${idx + 1}`,
+      phase: "playoffs",
+      roundIndex: r2Index,
+      slotIndex: idx,
+      label: `Weighted R2 M${idx + 1}`,
+      players,
+      nextMatchId: null,
+      nextSlot: null
+    };
+  });
+
+  rounds.push({ name: "Weighted R2", index: r2Index, matches: r2Matches });
+
+  // ------------------------------------------------------------
+  // 7) Weighted R3: top seed vs winner of its region’s R2
+  // even idx: top seed top, Winner(R2) bottom
+  // odd idx:  Winner(R2) top, top seed bottom
+  // ------------------------------------------------------------
+  const stageTeamsAfterR3 = base / 2; // base16 -> 8 teams (Quarterfinals), base32 -> 16 teams (Round of 16)
+  const r3StageName = stageNameFromTeams(stageTeamsAfterR3);
+
+  const r3Matches = regions.map((reg, idx) => {
+    const top = teamOrReplacement(reg.topSeed);
+    const feeder = r2Matches[idx];
+
+    const topPlayer = {
+      id: top?.id ?? `seed-${reg.topSeed}`,
+      teamId: top?.teamId ?? top?.id ?? null,
+      name: top ? (top.name ?? teamLabel(top)) : `Seed ${reg.topSeed}`,
+      score: ""
+    };
+
+    const winnerPlayer = {
+      id: `winner-${feeder.id}`,
+      teamId: null,
+      name: `Winner of ${feeder.id}`,
+      score: ""
+    };
+
+    const seedOnTop = (idx % 2) === 0;
+    const players = seedOnTop ? [topPlayer, winnerPlayer] : [winnerPlayer, topPlayer];
+
+    feeder.nextMatchId = `W-R${r3Index}-M${idx + 1}`;
+    feeder.nextSlot = seedOnTop ? 2 : 1;
+
+    return {
+      id: `W-R${r3Index}-M${idx + 1}`,
+      phase: "playoffs",
+      roundIndex: r3Index,
+      slotIndex: idx,
+      label: `${r3StageName} M${idx + 1}`,
+      players,
+      nextMatchId: null,
+      nextSlot: null
+    };
+  });
+
+  rounds.push({ name: r3StageName, index: r3Index, matches: r3Matches });
+
+  // ------------------------------------------------------------
+  // 8) Finish remaining rounds as a normal bracket from R3 winners onward
+  // ------------------------------------------------------------
+  let prevRoundMatches = r3Matches;
+  let prevCount = prevRoundMatches.length;
+  let roundIdx = r3Index + 1;
+
+  while (prevCount >= 2) {
+    const count = prevCount / 2;
+    const teamsThisStage = count * 2;
+    const name = stageNameFromTeams(teamsThisStage);
+
+    const matches = [];
+    for (let i = 0; i < count; i++) {
+      matches.push({
+        id: `W-R${roundIdx}-M${i + 1}`,
+        phase: "playoffs",
+        roundIndex: roundIdx,
+        slotIndex: i,
+        label: `${name} M${i + 1}`,
+        players: [
+          { id: `tbd-${roundIdx}-${i}-a`, teamId: null, name: "TBD", score: "" },
+          { id: `tbd-${roundIdx}-${i}-b`, teamId: null, name: "TBD", score: "" }
+        ],
+        nextMatchId: null,
+        nextSlot: null
+      });
+    }
+
+    rounds.push({ name, index: roundIdx, matches });
+
+    for (let i = 0; i < prevCount; i++) {
+      const from = prevRoundMatches[i];
+      const to = matches[Math.floor(i / 2)];
+      from.nextMatchId = to.id;
+      from.nextSlot = (i % 2 === 0) ? 1 : 2;
+    }
+
+    prevRoundMatches = matches;
+    prevCount = count;
+    roundIdx++;
+  }
+
+  return rounds;
+}
 
   // Add a 3rd-place match (semifinal losers) into the final column.
   // This is a pure preview/publish structure item: it intentionally does NOT
