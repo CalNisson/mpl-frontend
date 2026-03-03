@@ -1234,37 +1234,62 @@
   const GENDERED_FORMS = new Set(["meowstic", "indeedee", "basculegion", "oinkologne"]);
 
   function parseDetail(detail) {
-    const raw = (detail || "").trim();
-    const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-    const base = parts[0] || "";
-    const baseId = base
-      .toLowerCase()
-      .replace(/['’]/g, "")
-      .replace(/\./g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
+  const raw = (detail || "").trim();
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
 
-    let gender = null;
-    for (const p of parts.slice(1)) {
-      const u = p.toUpperCase();
-      if (u === "M" || u === "MALE") {
-        gender = "M";
-        break;
-      }
-      if (u === "F" || u === "FEMALE") {
-        gender = "F";
-        break;
-      }
+  // Showdown details usually look like: "Indeedee, F" but sometimes the base is "Indeedee-F"/"Indeedee-M".
+  let base = parts[0] || "";
+  let gender = null;
+
+  // 1) gender tokens after the comma
+  for (const p of parts.slice(1)) {
+    const u = String(p).trim().toUpperCase();
+    if (u === "M" || u === "MALE") {
+      gender = "M";
+      break;
     }
-
-    const isGenderedForm = GENDERED_FORMS.has(baseId);
-    const displayName = isGenderedForm && gender ? `${base} (${gender === "M" ? "Male" : "Female"})` : base;
-
-    const spriteKey = isGenderedForm && gender ? `${baseId}-${gender === "M" ? "male" : "female"}` : baseId;
-
-    return { base, baseId, gender, displayName, spriteKey };
+    if (u === "F" || u === "FEMALE") {
+      gender = "F";
+      break;
+    }
   }
+
+  // 2) hyphen suffix in the base itself (e.g. "Indeedee-F")
+  if (!gender) {
+    const m = String(base).match(/^(.*?)[-\u2010\u2011\u2012\u2013\u2014\u2212\u2043\uFE63\uFF0D\-](M|F)$/i);
+    if (m) {
+      base = m[1].trim();
+      gender = m[2].toUpperCase();
+    }
+  }
+
+  const baseId = base
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/\./g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const isGenderedForm = GENDERED_FORMS.has(baseId);
+
+  // MPL expectations:
+  // - If a gender is specified (via ", F"/", M" or "-F"/"-M"), use it.
+  // - If it's one of the gendered species and gender is missing, treat it as Male by default.
+  const effectiveGender = isGenderedForm ? (gender || "M") : gender;
+
+  const displayName =
+    isGenderedForm && effectiveGender
+      ? `${base} (${effectiveGender === "M" ? "Male" : "Female"})`
+      : base;
+
+  const spriteKey =
+    isGenderedForm && effectiveGender
+      ? `${baseId}-${effectiveGender === "M" ? "male" : "female"}`
+      : baseId;
+
+  return { base, baseId, gender: effectiveGender, displayName, spriteKey };
+}
 
   async function fetchPokemonSpriteByKey(spriteKey) {
     const slug = (spriteKey || "").trim();

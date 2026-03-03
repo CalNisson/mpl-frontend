@@ -124,6 +124,21 @@ let loading = true;
     const canonical = CANONICAL_FORMS.get(k);
     if (canonical) k = canonical;
 
+// Gendered forms handling (MPL):
+// - Accept Showdown suffixes like "-F"/"-M" (including unicode dashes)
+// - Default to Male when gender is omitted for gendered species
+const GENDER_DASH = "[-\u2010\u2011\u2012\u2013\u2014\u2212\u2043\uFE63\uFF0D\-]";
+const mGenderSuffix = k.match(new RegExp(`^(.*)${GENDER_DASH}(m|f)$`, "i"));
+if (mGenderSuffix) {
+  const base = mGenderSuffix[1];
+  const g = mGenderSuffix[2].toLowerCase();
+  if (GENDER_FORMS.has(base)) {
+    k = `${base}-${g === "m" ? "male" : "female"}`;
+  }
+} else if (GENDER_FORMS.has(k)) {
+  k = `${k}-male`;
+}
+
     return k;
   }
 
@@ -145,34 +160,51 @@ let loading = true;
   const GENDER_FORMS = new Set(["meowstic", "indeedee", "basculegion", "oinkologne"]);
 
   function parseShowdownDetail(detail) {
-    const raw = String(detail ?? "").trim();
-    if (!raw) return { base: "", gender: null };
+  const raw = String(detail ?? "").trim();
+  if (!raw) return { base: "", gender: null };
 
-    const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-    const base = parts[0] ?? "";
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  let base = parts[0] ?? "";
 
-    let gender = null;
-    for (const p of parts.slice(1)) {
-      if (p === "M" || p === "F") {
-        gender = p;
-        break;
-      }
+  let gender = null;
+  for (const p of parts.slice(1)) {
+    const u = String(p).trim().toUpperCase();
+    if (u === "M" || u === "MALE") {
+      gender = "M";
+      break;
     }
-    return { base, gender };
+    if (u === "F" || u === "FEMALE") {
+      gender = "F";
+      break;
+    }
   }
+
+  // Sometimes Showdown encodes gender in the base itself ("Indeedee-F"/"Indeedee-M")
+  if (!gender) {
+    const m = String(base).match(/^(.*?)[-\u2010\u2011\u2012\u2013\u2014\u2212\u2043\uFE63\uFF0D\-](M|F)$/i);
+    if (m) {
+      base = m[1].trim();
+      gender = m[2].toUpperCase();
+    }
+  }
+
+  return { base, gender };
+}
 
   function displayNameFromDetail(detail) {
-    const { base, gender } = parseShowdownDetail(detail);
-    if (!base) return "";
+  const { base, gender } = parseShowdownDetail(detail);
+  if (!base) return "";
 
-    const canonBase = canonicalizeNameIfNeeded(base);
-    const baseKey = normName(canonBase);
+  const canonBase = canonicalizeNameIfNeeded(base);
+  const baseKey = normName(canonBase);
 
-    if (GENDER_FORMS.has(baseKey) && (gender === "M" || gender === "F")) {
-      return `${canonBase} (${gender === "M" ? "Male" : "Female"})`;
-    }
-    return canonBase;
+  if (GENDER_FORMS.has(baseKey)) {
+    const effectiveGender = gender || "M"; // default Male if missing, per MPL expectations
+    return `${canonBase} (${effectiveGender === "M" ? "Male" : "Female"})`;
   }
+
+  return canonBase;
+}
 
   function matchKeysFromDisplayName(displayName) {
     const keys = new Set();
