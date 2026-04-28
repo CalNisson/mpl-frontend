@@ -558,19 +558,18 @@
       const s1 = m.team1_score ?? 0;
       const s2 = m.team2_score ?? 0;
 
-      const hasAnyScore = m.team1_score != null || m.team2_score != null;
-      const played = hasAnyScore && (s1 !== 0 || s2 !== 0);
-      if (!played) continue;
-
       if (m.is_double_loss) {
         losses[t1Id] = (losses[t1Id] ?? 0) + 1;
         losses[t2Id] = (losses[t2Id] ?? 0) + 1;
 
-        diff[t1Id] = (diff[t1Id] ?? 0) - s2;
-        diff[t2Id] = (diff[t2Id] ?? 0) - s1;
+        diff[t1Id] = (diff[t1Id] ?? 0) - 3;
+        diff[t2Id] = (diff[t2Id] ?? 0) - 3;
         continue;
       }
 
+      const hasAnyScore = m.team1_score != null || m.team2_score != null;
+      const played = hasAnyScore && (s1 !== 0 || s2 !== 0);
+      if (!played) continue;
       if (s1 > s2) {
         wins[t1Id] = (wins[t1Id] ?? 0) + 1;
         losses[t2Id] = (losses[t2Id] ?? 0) + 1;
@@ -594,26 +593,8 @@
   }
 
   function standingsSort(a, b) {
-    const ra = firstNumOrNull(
-      a?.regular_season_rank,
-      a?.rank,
-      a?.standing?.rank,
-      a?.standings?.rank,
-      a?.record?.rank,
-      a?.seed,
-      a?.place
-    );
-    const rb = firstNumOrNull(
-      b?.regular_season_rank,
-      b?.rank,
-      b?.standing?.rank,
-      b?.standings?.rank,
-      b?.record?.rank,
-      b?.seed,
-      b?.place
-    );
-    if (ra != null && rb != null && ra !== rb) return ra - rb;
-
+    // Match the Leaderboard ordering. Do not use stale rank/seed fields here,
+    // because those can lag behind freshly computed double-loss differential.
     const wa =
       seasonWinsByTeamId[a?.id] ??
       firstNumOrNull(a?.season_wins, a?.wins, a?.standing?.wins, a?.record?.wins, a?.record?.w) ??
@@ -639,7 +620,7 @@
       firstNumOrNull(
         b?.differential,
         b?.diff,
-        a?.standing?.differential,
+        b?.standing?.differential,
         b?.standing?.diff,
         b?.record?.diff
       ) ??
@@ -670,7 +651,6 @@
 
     return (a?.team_name ?? "").localeCompare(b?.team_name ?? "");
   }
-
   function mergeTeamsWithStandings(teamsList, standingsList) {
     const teamsSafe = (teamsList ?? []).filter((t) => t && t.id != null);
     if (!Array.isArray(standingsList) || standingsList.length === 0) return teamsSafe.slice();
