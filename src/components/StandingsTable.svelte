@@ -126,13 +126,9 @@
       if (isDL) {
         losses[t1id] += 1;
         losses[t2id] += 1;
-        // double loss diff: both teams lose by opponent's score
-        const s1 = Number(m.team1_score ?? 0);
-        const s2 = Number(m.team2_score ?? 0);
-        if (Number.isFinite(s1) && Number.isFinite(s2)) {
-          diff[t1id] -= s2;
-          diff[t2id] -= s1;
-        }
+        // double loss diff: both teams receive a fixed -3 penalty
+        diff[t1id] -= 3;
+        diff[t2id] -= 3;
         continue;
       }
 
