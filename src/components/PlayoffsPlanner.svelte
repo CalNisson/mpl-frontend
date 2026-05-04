@@ -231,7 +231,7 @@
         phase: m.phase,
         round_index: m.roundIndex,
         slot_index: m.slotIndex,
-        round_label: (roundLabel ?? m.label),
+        round_label: (m.label ?? roundLabel),
         team1_id: t1,
         team2_id: t2
       });
