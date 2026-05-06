@@ -13,6 +13,7 @@
   // ⬇️ You'll build this component next (org dropdown + league dropdown)
   // It should call setOrganization(org) / setLeague(league) from leagueStore.
   import OrgLeagueBar from "./components/OrgLeagueBar.svelte";
+  import SeasonCompletionBanner from "./components/SeasonCompletionBanner.svelte";
 
   // active path for tab styling
   $: path = $location;
@@ -148,6 +149,10 @@
         {/if}
       </div>
     </div>
+  {/if}
+
+  {#if needsLeagueContext && ready}
+    <SeasonCompletionBanner />
   {/if}
 
   <Router {routes} />

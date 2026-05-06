@@ -47,14 +47,121 @@
     return lower.includes("third");
   }
 
-  function getRoundOrder(label) {
-    const lower = (label || "").toLowerCase();
-    if (lower.includes("round of 32")) return 1;
-    if (lower.includes("round of 16")) return 2;
-    if (lower.includes("quarter")) return 3;
+  function getWeightedRoundIndex(label) {
+    const lower = String(label ?? "").toLowerCase();
+    const match = lower.match(/weighted\s*r\s*(\d+)/i);
+    return match ? Number(match[1]) : null;
+  }
+
+  function getGenericRoundIndex(label) {
+    const lower = String(label ?? "").toLowerCase();
+    const match = lower.match(/^round\s*(\d+)$/i);
+    return match ? Number(match[1]) : null;
+  }
+
+  function getCanonicalRoundSize(label) {
+    const lower = String(label ?? "").toLowerCase();
+
+    if (isThirdPlaceLabel(lower)) return null;
+
+    const roundOf = lower.match(/round\s+of\s+(\d+)/i);
+    if (roundOf) return Number(roundOf[1]);
+
+    if (lower.includes("quarter")) return 8;
     if (lower.includes("semi")) return 4;
-    if (lower.includes("final")) return 5;
-    return 99;
+
+    if (lower.trim() === "finals" || lower.trim() === "final") {
+      return 2;
+    }
+
+    return null;
+  }
+
+  function getInferredWeightedRoundSize(label, orderedWeightedLabels, firstCanonicalSize) {
+    const weightedIndex = getWeightedRoundIndex(label);
+
+    if (
+      weightedIndex == null ||
+      !orderedWeightedLabels.length ||
+      !firstCanonicalSize
+    ) {
+      return null;
+    }
+
+    const totalWeightedRounds = orderedWeightedLabels.length;
+
+    // Example:
+    // Weighted R1, Weighted R2, Quarterfinals
+    // firstCanonicalSize = 8
+    // Weighted R2 = 8 * 2 = Round of 16
+    // Weighted R1 = 8 * 4 = Round of 32
+    return firstCanonicalSize * Math.pow(2, totalWeightedRounds - weightedIndex + 1);
+  }
+
+  function getOrderedWeightedLabels(labels) {
+    return labels
+      .filter((label) => getWeightedRoundIndex(label) != null)
+      .slice()
+      .sort((a, b) => getWeightedRoundIndex(a) - getWeightedRoundIndex(b));
+  }
+
+  function getFirstCanonicalRoundSize(labels) {
+    const canonicalSizes = labels
+      .map((label) => getCanonicalRoundSize(label))
+      .filter((size) => typeof size === "number" && Number.isFinite(size));
+
+    if (!canonicalSizes.length) return null;
+
+    // Larger "Round of N" values happen earlier in the bracket.
+    // If the first known canonical round is Quarterfinals, this returns 8.
+    // If it is Round of 16, this returns 16.
+    return Math.max(...canonicalSizes);
+  }
+
+  function getRoundSortSize(label, allMainLabels) {
+    const canonicalSize = getCanonicalRoundSize(label);
+    if (canonicalSize != null) return canonicalSize;
+
+    const orderedWeightedLabels = getOrderedWeightedLabels(allMainLabels);
+    const firstCanonicalSize = getFirstCanonicalRoundSize(allMainLabels);
+    const weightedSize = getInferredWeightedRoundSize(
+      label,
+      orderedWeightedLabels,
+      firstCanonicalSize
+    );
+
+    if (weightedSize != null) return weightedSize;
+
+    return null;
+  }
+
+  function getRoundOrder(label, allMainLabels = []) {
+    const sortSize = getRoundSortSize(label, allMainLabels);
+    if (sortSize != null) {
+      // Larger round sizes come earlier.
+      return -sortSize;
+    }
+
+    // Fallback for non-canonical labels such as playins "Round 1", "Round 2", etc.
+    const genericIndex = getGenericRoundIndex(label);
+    if (genericIndex != null) return genericIndex;
+
+    return 999;
+  }
+
+  function getDisplayRoundLabel(label, allMainLabels = []) {
+    const weightedIndex = getWeightedRoundIndex(label);
+    if (weightedIndex == null) return label;
+
+    const orderedWeightedLabels = getOrderedWeightedLabels(allMainLabels);
+    const firstCanonicalSize = getFirstCanonicalRoundSize(allMainLabels);
+    const inferredSize = getInferredWeightedRoundSize(
+      label,
+      orderedWeightedLabels,
+      firstCanonicalSize
+    );
+
+    return inferredSize ? `Round of ${inferredSize}` : label;
   }
 
   // ---- Standings-style seeding (same ordering as StandingsTable) ----
@@ -279,9 +386,18 @@
     const mainLabels = allLabels.filter((l) => !isThirdPlaceLabel(l));
     const thirdLabels = allLabels.filter((l) => isThirdPlaceLabel(l));
 
-    const sortedMainLabels = mainLabels.sort(
-      (a, b) => getRoundOrder(a) - getRoundOrder(b)
-    );
+    const sortedMainLabels = mainLabels.slice().sort((a, b) => {
+      const orderDiff = getRoundOrder(a, mainLabels) - getRoundOrder(b, mainLabels);
+      if (orderDiff !== 0) return orderDiff;
+
+      const weightedA = getWeightedRoundIndex(a);
+      const weightedB = getWeightedRoundIndex(b);
+      if (weightedA != null && weightedB != null) {
+        return weightedA - weightedB;
+      }
+
+      return String(a).localeCompare(String(b));
+    });
 
     const bracketRounds = [];
     let roundIndex = 0;
@@ -312,9 +428,11 @@
 
         const bestOf = inferBestOfFromGames(gmArr);
 
+        const displayRoundLabel = getDisplayRoundLabel(label, sortedMainLabels);
+
         let matchLabel = "Finals";
-        if (label.toLowerCase() !== "finals") {
-          matchLabel = `${label} M${idx + 1}`;
+        if (displayRoundLabel.toLowerCase() !== "finals") {
+          matchLabel = `${displayRoundLabel} M${idx + 1}`;
         }
 
         return {
@@ -338,7 +456,8 @@
 
       const round = {
         id: `round-${label}`,
-        name: label,
+        name: getDisplayRoundLabel(label, sortedMainLabels),
+        sourceName: label,
         index: roundIndex,
         matches: matchesForRound
       };
@@ -347,9 +466,13 @@
       roundIndex += 1;
     }
 
-    // Third place matches share the final column, below the final
+    // Third place matches share the finals column, below the final.
+    // Do not assume "last round" is Finals; future/unknown labels can otherwise
+    // accidentally push Third Place into the wrong column.
     if (thirdLabels.length && bracketRounds.length) {
-      const finalRound = bracketRounds[bracketRounds.length - 1];
+      const finalRound =
+        bracketRounds.find((r) => getCanonicalRoundSize(r.sourceName ?? r.name) === 2) ??
+        bracketRounds[bracketRounds.length - 1];
 
       for (const label of thirdLabels) {
         const thirdMatchesRaw = grouped
@@ -414,8 +537,8 @@
 
     for (const r of bracketRounds) {
       for (const m of r.matches) {
-        const to = linkMap.get(Number(m.id));
-        m.nextMatchId = to != null ? to : null;
+        const toBackendId = linkMap.get(Number(m.backendId));
+        m.nextMatchId = toBackendId != null ? `m${toBackendId}` : null;
       }
     }
   } else {

@@ -559,6 +559,27 @@ export async function getLeagueMe(leagueArg) {
   return handle(res);
 }
 
+
+export async function completeSeason(seasonId, leagueArg) {
+  const bits = normalizeLeagueBits(leagueArg);
+
+  const res = await apiFetch(
+    withLeagueExplicit(`/seasons/${seasonId}/complete`, bits),
+    { method: "POST" }
+  );
+
+  const out = await handle(res);
+
+  clearApiCache("seasons:");
+  clearApiCache("season-dashboard:");
+  clearApiCache(`season-matches-for-reporting:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`season-schedule:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`playoffs-status:${leagueKeyFromBits(bits)}:${seasonId}`);
+  clearApiCache(`playoffs-bracket:${leagueKeyFromBits(bits)}:${seasonId}`);
+
+  return out;
+}
+
 export async function createSeason({ league_id, name, start_date, format }) {
   const res = await apiFetch(`/seasons`, {
     method: "POST",
