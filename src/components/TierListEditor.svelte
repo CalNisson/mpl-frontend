@@ -9,7 +9,8 @@
     putTierColumns,
     patchTier,
     deleteTier,
-    lookupPokemonNames
+    lookupPokemonNames,
+    patchSeasonTierListSettings
   } from "../lib/api.js";
 
   export let seasonId;
@@ -84,6 +85,135 @@
   let columns = [];
   let assignments = [];
   let tierList = null;
+
+  // ----------------------------
+  // Miscellaneous draft rules
+  // ----------------------------
+  const RULE_MAX = 2000;
+  let rulesOpen = false;
+  let ruleRemovalMode = false;
+  let ruleEditIndex = null;
+  let ruleDraft = "";
+  let newRuleDraft = "";
+  let rulesSaving = false;
+  let rulesError = "";
+
+  $: miscellaneousRules = Array.isArray(tierList?.miscellaneous_rules)
+    ? tierList.miscellaneous_rules
+    : [];
+
+  function openRules() {
+    rulesOpen = true;
+    ruleRemovalMode = false;
+    ruleEditIndex = null;
+    ruleDraft = "";
+    newRuleDraft = "";
+    rulesError = "";
+  }
+
+  function closeRules() {
+    if (rulesSaving) return;
+    rulesOpen = false;
+    ruleRemovalMode = false;
+    ruleEditIndex = null;
+    ruleDraft = "";
+    newRuleDraft = "";
+    rulesError = "";
+  }
+
+  function startRuleEdit(index) {
+    if (!canEdit || ruleRemovalMode || rulesSaving) return;
+    ruleEditIndex = index;
+    ruleDraft = String(miscellaneousRules[index] ?? "");
+    rulesError = "";
+  }
+
+  function cancelRuleEdit() {
+    ruleEditIndex = null;
+    ruleDraft = "";
+    rulesError = "";
+  }
+
+  async function saveRules(updatedRules, successMessage) {
+    if (!canEdit || rulesSaving) return;
+
+    rulesSaving = true;
+    rulesError = "";
+
+    try {
+      const updatedTierList = await patchSeasonTierListSettings(seasonId, {
+        miscellaneous_rules: updatedRules
+      });
+
+      // The PATCH returns TierListRow, so update the local copy immediately.
+      // This avoids replacing any unrelated board state.
+      tierList = { ...tierList, ...updatedTierList };
+      board = board ? { ...board, tier_list: tierList } : board;
+
+      saveMsg = successMessage;
+      setTimeout(() => (saveMsg = ""), 1200);
+    } catch (e) {
+      rulesError = e?.message ?? String(e);
+    } finally {
+      rulesSaving = false;
+    }
+  }
+
+  async function addRule() {
+    if (!canEdit) return;
+    const rule = newRuleDraft.trim();
+
+    if (!rule) {
+      rulesError = "Rule cannot be blank.";
+      return;
+    }
+    if (rule.length > RULE_MAX) {
+      rulesError = `Rule must be ${RULE_MAX} characters or fewer.`;
+      return;
+    }
+
+    await saveRules([...miscellaneousRules, rule], "Rule added.");
+    if (!rulesError) newRuleDraft = "";
+  }
+
+  async function saveRuleEdit(index) {
+    if (!canEdit) return;
+    const rule = ruleDraft.trim();
+
+    if (!rule) {
+      rulesError = "Rule cannot be blank.";
+      return;
+    }
+    if (rule.length > RULE_MAX) {
+      rulesError = `Rule must be ${RULE_MAX} characters or fewer.`;
+      return;
+    }
+
+    const updated = [...miscellaneousRules];
+    updated[index] = rule;
+    await saveRules(updated, "Rule updated.");
+
+    if (!rulesError) cancelRuleEdit();
+  }
+
+  async function removeRule(index) {
+    if (!canEdit || rulesSaving) return;
+
+    const rule = String(miscellaneousRules[index] ?? "");
+    const ok = window.confirm(`Remove this draft rule?\n\n${rule}`);
+    if (!ok) return;
+
+    const updated = miscellaneousRules.filter((_, i) => i !== index);
+    await saveRules(updated, "Rule removed.");
+
+    if (!rulesError && ruleEditIndex === index) cancelRuleEdit();
+  }
+
+  function toggleRuleRemovalMode() {
+    if (!canEdit || rulesSaving) return;
+    ruleRemovalMode = !ruleRemovalMode;
+    cancelRuleEdit();
+  }
 
   // NEW: team lookup map for tile colors (when assignments don't include the color)
   let teamMetaById = new Map(); // team_id -> { primary_color, abbrev, name }
@@ -1224,6 +1354,10 @@ async function applyBulkToBucket(bKey, tierId, points) {
     <input class="search" placeholder="Search Pokémon (global)…" bind:value={search} />
 
     <div class="right">
+      {#if tierList}
+        <button class="btn" on:click={openRules}>Draft Rules</button>
+      {/if}
+
       {#if canEdit}
         <button class="btn" on:click={toggleEditMode}>
           {editMode ? "Exit Edit Mode" : "Edit Mode"}
@@ -1731,6 +1865,114 @@ async function applyBulkToBucket(bKey, tierId, points) {
   {/if}
 </div>
 
+{#if rulesOpen}
+  <div class="rules-backdrop" role="presentation" on:click|self={closeRules}>
+    <section class="rules-modal" role="dialog" aria-modal="true" aria-labelledby="draft-rules-title">
+      <div class="rules-header">
+        <div>
+          <h2 id="draft-rules-title">Draft Rules</h2>
+          <div class="muted rules-subtitle">Miscellaneous rules and clauses for this season's draft.</div>
+        </div>
+        <button class="rules-close" type="button" on:click={closeRules} disabled={rulesSaving} aria-label="Close draft rules">×</button>
+      </div>
+
+      {#if rulesError}
+        <div class="rules-error">{rulesError}</div>
+      {/if}
+
+      <div class="rules-list">
+        {#if miscellaneousRules.length === 0}
+          <div class="rules-empty muted">No miscellaneous draft rules have been added.</div>
+        {:else}
+          {#each miscellaneousRules as rule, index}
+            <div class:removal={ruleRemovalMode} class="rule-item">
+              {#if canEdit && ruleRemovalMode}
+                <button
+                  class="rule-remove-x"
+                  type="button"
+                  on:click={() => removeRule(index)}
+                  disabled={rulesSaving}
+                  aria-label={`Remove rule ${index + 1}`}
+                  title="Remove rule"
+                >×</button>
+              {/if}
+
+              <div class="rule-number">{index + 1}.</div>
+
+              <div class="rule-content">
+                {#if canEdit && ruleEditIndex === index}
+                  <textarea
+                    class="rule-textarea"
+                    rows="4"
+                    maxlength={RULE_MAX}
+                    bind:value={ruleDraft}
+                    disabled={rulesSaving}
+                  ></textarea>
+                  <div class="rule-edit-actions">
+                    <span class="muted rule-count">{ruleDraft.length}/{RULE_MAX}</span>
+                    <button class="btn" type="button" on:click={cancelRuleEdit} disabled={rulesSaving}>Cancel</button>
+                    <button class="btn" type="button" on:click={() => saveRuleEdit(index)} disabled={rulesSaving || !ruleDraft.trim()}>
+                      {rulesSaving ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                {:else}
+                  <!-- Intentionally plain Svelte interpolation: user-entered HTML is escaped, never executed. -->
+                  <div class="rule-text">{rule}</div>
+                {/if}
+              </div>
+
+              {#if canEdit && !ruleRemovalMode && ruleEditIndex !== index}
+                <button
+                  class="rule-edit-btn"
+                  type="button"
+                  on:click={() => startRuleEdit(index)}
+                  disabled={rulesSaving}
+                  aria-label={`Edit rule ${index + 1}`}
+                  title="Edit rule"
+                >✎</button>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </div>
+
+      {#if canEdit}
+        <div class="rules-admin">
+          <div class="rules-add">
+            <label for="new-draft-rule">Add Rule</label>
+            <textarea
+              id="new-draft-rule"
+              class="rule-textarea"
+              rows="3"
+              maxlength={RULE_MAX}
+              placeholder="Enter a new miscellaneous draft rule…"
+              bind:value={newRuleDraft}
+              disabled={rulesSaving || ruleRemovalMode}
+            ></textarea>
+            <div class="rules-add-actions">
+              <span class="muted rule-count">{newRuleDraft.length}/{RULE_MAX}</span>
+              <button
+                class="btn"
+                type="button"
+                on:click={addRule}
+                disabled={rulesSaving || ruleRemovalMode || !newRuleDraft.trim()}
+              >{rulesSaving ? "Saving…" : "Add Rule"}</button>
+            </div>
+          </div>
+
+          <button
+            class:danger-active={ruleRemovalMode}
+            class="btn rules-remove-mode"
+            type="button"
+            on:click={toggleRuleRemovalMode}
+            disabled={rulesSaving || miscellaneousRules.length === 0}
+          >{ruleRemovalMode ? "Exit Removal" : "Remove"}</button>
+        </div>
+      {/if}
+    </section>
+  </div>
+{/if}
+
 {#if editable && drag.active}
   <div class="ghost" style="transform: translate({drag.x + drag.offsetX}px, {drag.y + drag.offsetY}px);">
     {drag.pokemonName || "Dragging…"}
@@ -2236,5 +2478,170 @@ async function applyBulkToBucket(bKey, tierId, points) {
     gap: 8px;
     flex-wrap: wrap;
     align-items: center;
+  }
+
+
+  /* Draft rules modal */
+  .rules-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0,0,0,0.72);
+    backdrop-filter: blur(4px);
+  }
+
+  .rules-modal {
+    width: min(760px, 100%);
+    max-height: min(82vh, 900px);
+    overflow-y: auto;
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: #17191f;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.55);
+    padding: 1.15rem;
+  }
+
+  .rules-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 1rem;
+  }
+
+  .rules-header h2 { margin: 0; font-size: 1.25rem; }
+  .rules-subtitle { margin-top: 0.25rem; }
+
+  .rules-close {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: rgba(255,255,255,0.8);
+    font-size: 1.8rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.2rem;
+  }
+
+  .rules-close:disabled { opacity: 0.45; cursor: not-allowed; }
+  .rules-list { display: flex; flex-direction: column; gap: 8px; }
+
+  .rules-empty {
+    padding: 1rem;
+    text-align: center;
+    border: 1px dashed rgba(255,255,255,0.12);
+    border-radius: 12px;
+  }
+
+  .rule-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 0.8rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+  }
+
+  .rule-item.removal { border-color: rgba(239,68,68,0.22); }
+  .rule-number { flex: 0 0 auto; font-weight: 900; opacity: 0.7; }
+  .rule-content { flex: 1; min-width: 0; }
+  .rule-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+
+  .rule-edit-btn,
+  .rule-remove-x {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 900;
+  }
+
+  .rule-edit-btn {
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.9);
+  }
+
+  .rule-remove-x {
+    border: 1px solid rgba(239,68,68,0.55);
+    background: rgba(239,68,68,0.14);
+    color: #fecaca;
+    font-size: 1.15rem;
+  }
+
+  .rule-edit-btn:disabled,
+  .rule-remove-x:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .rule-textarea {
+    width: 100%;
+    resize: vertical;
+    box-sizing: border-box;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(0,0,0,0.2);
+    color: rgba(255,255,255,0.94);
+    padding: 0.7rem 0.8rem;
+    outline: none;
+    font: inherit;
+    line-height: 1.4;
+  }
+
+  .rule-textarea:focus {
+    border-color: rgba(255,107,107,0.35);
+    box-shadow: 0 0 0 3px rgba(255,107,107,0.1);
+  }
+
+  .rule-edit-actions,
+  .rules-add-actions {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .rule-count { margin-right: auto; font-size: 0.82rem; }
+
+  .rules-admin {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .rules-add { flex: 1; min-width: 0; }
+  .rules-add label { display: block; font-weight: 900; margin-bottom: 0.45rem; }
+  .rules-remove-mode { flex: 0 0 auto; }
+  .rules-remove-mode.danger-active {
+    border-color: rgba(239,68,68,0.55);
+    background: rgba(239,68,68,0.14);
+    color: #fecaca;
+  }
+
+  .rules-error {
+    margin-bottom: 0.8rem;
+    padding: 0.7rem 0.8rem;
+    border-radius: 10px;
+    border: 1px solid rgba(239,68,68,0.4);
+    background: rgba(239,68,68,0.1);
+    color: #fecaca;
+  }
+
+  @media (max-width: 640px) {
+    .rules-backdrop { padding: 12px; }
+    .rules-modal { max-height: 90vh; padding: 0.9rem; }
+    .rules-admin { flex-direction: column; align-items: stretch; }
+    .rules-remove-mode { width: 100%; }
   }
 </style>
