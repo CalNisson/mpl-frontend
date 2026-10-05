@@ -901,9 +901,26 @@
       .replace(/['"]/g, "")
       .trim();
 
+    // ----------------------------
+    // Explicit gender forms
+    // ----------------------------
+    // e.g. Indeedee (Female) -> indeedee-female
+    //      Indeedee (Male)   -> indeedee-male
+    const genderMatch = raw.match(/^(.+?)\s*\((male|female)\)$/);
+    if (genderMatch) {
+      const base = genderMatch[1].trim().replace(/\s+/g, "-");
+      const gender = genderMatch[2];
+
+      return `${base}-${gender}`;
+    }
+
+    // ----------------------------
+    // Urshifu
+    // ----------------------------
     if (raw.includes("urshifu")) {
       if (raw.includes("single")) return "urshifu-single-strike";
       if (raw.includes("rapid")) return "urshifu-rapid-strike";
+
       return "urshifu-single-strike";
     }
 
@@ -913,20 +930,147 @@
       .replace(/['"]/g, "")
       .trim();
 
+    // ----------------------------
+    // Species/forms requiring a
+    // specific PokéAPI default
+    // ----------------------------
+
+    // Jellicent has male/female artwork, but our database does not
+    // distinguish the forms. PokéAPI's Jellicent entry defaults male.
+    if (n === "jellicent") return "jellicent-male";
+
+    // Mimikyu requires its Disguised form name.
+    if (n === "mimikyu") return "mimikyu-disguised";
+
+    // Toxtricity must specify a form. Default to Amped unless the
+    // league Pokémon explicitly says Low Key.
+    if (n.includes("toxtricity")) {
+      if (n.includes("low key") || n.includes("low-key")) {
+        return "toxtricity-low-key";
+      }
+
+      return "toxtricity-amped";
+    }
+
+    // ----------------------------
+    // Ogerpon
+    // ----------------------------
+    // Teal Mask is simply "ogerpon" in PokéAPI.
+    if (n === "ogerpon" || n === "ogerpon-teal" || n === "ogerpon-teal-mask") {
+      return "ogerpon";
+    }
+
+    if (n === "ogerpon-cornerstone" || n === "ogerpon-cornerstone-mask") {
+      return "ogerpon-cornerstone-mask";
+    }
+
+    if (n === "ogerpon-hearthflame" || n === "ogerpon-hearthflame-mask") {
+      return "ogerpon-hearthflame-mask";
+    }
+
+    if (n === "ogerpon-wellspring" || n === "ogerpon-wellspring-mask") {
+      return "ogerpon-wellspring-mask";
+    }
+
+    // ----------------------------
+    // Zygarde
+    // ----------------------------
+    // Our names may contain %, while PokéAPI's slugs do not.
+    if (
+      n === "zygarde-10%" ||
+      n === "zygarde 10%" ||
+      n === "zygarde-10" ||
+      n === "zygarde 10"
+    ) {
+      return "zygarde-10";
+    }
+
+    if (
+      n === "zygarde-50%" ||
+      n === "zygarde 50%" ||
+      n === "zygarde-50" ||
+      n === "zygarde 50"
+    ) {
+      return "zygarde-50";
+    }
+
+    if (
+      n === "zygarde-complete" ||
+      n === "zygarde complete"
+    ) {
+      return "zygarde-complete";
+    }
+
+    // ----------------------------
+    // Silvally
+    // ----------------------------
+    // PokéAPI does not expose each memory typing as a separate
+    // Pokémon entry. All Silvally types use the base Silvally art.
+    if (n === "silvally" || n.startsWith("silvally-") || n.startsWith("silvally ")) {
+      return "silvally";
+    }
+
+    // ----------------------------
+    // Forces of Nature
+    // ----------------------------
+    if (n.includes("enamorus")) {
+      if (n.includes("therian")) return "enamorus-therian";
+      return "enamorus-incarnate";
+    }
+
+    if (n.includes("thundurus")) {
+      if (n.includes("therian")) return "thundurus-therian";
+      return "thundurus-incarnate";
+    }
+
+    if (n.includes("landorus")) {
+      if (n.includes("therian")) return "landorus-therian";
+      return "landorus-incarnate";
+    }
+
+    if (n.includes("tornadus")) {
+      if (n.includes("therian")) return "tornadus-therian";
+      return "tornadus-incarnate";
+    }
+
+    // ----------------------------
+    // Other required defaults
+    // ----------------------------
     if (n.startsWith("minior")) return "minior-red-meteor";
     if (n.endsWith("keldeo")) return "keldeo-ordinary";
     if (n.startsWith("aegislash")) return "aegislash-shield";
 
+    // ----------------------------
+    // Mega Evolutions
+    // ----------------------------
     if (n.startsWith("mega ")) {
-      let rest = n.replace("mega ", "").trim();
-      if (/ x$| y$/.test(rest)) {
-        const suffix = rest.slice(-1);
-        const base = rest.slice(0, -2).trim();
+      let rest = n.replace(/^mega\s+/, "").trim();
+
+      // X / Y / Z Mega forms
+      // Mega Charizard X -> charizard-mega-x
+      // Mega Absol Z     -> absol-mega-z
+      // Mega Garchomp Z  -> garchomp-mega-z
+      const suffixMatch = rest.match(/^(.+?)\s+([xyz])$/);
+
+      if (suffixMatch) {
+        const base = suffixMatch[1].trim().replace(/\s+/g, "-");
+        const suffix = suffixMatch[2];
+
         return `${base}-mega-${suffix}`;
       }
-      return `${rest}-mega`;
+
+      // Meowstic's normal species has gender-specific PokéAPI forms,
+      // but its Mega form uses the male-based slug.
+      if (rest === "meowstic") {
+        return "meowstic-male-mega";
+      }
+
+      return `${rest.replace(/\s+/g, "-")}-mega`;
     }
 
+    // ----------------------------
+    // Regional forms
+    // ----------------------------
     const regionalForms = [
       ["alolan ", "-alola"],
       ["galarian ", "-galar"],
@@ -937,25 +1081,29 @@
     for (const [prefix, suffix] of regionalForms) {
       if (n.startsWith(prefix)) {
         const base = n.slice(prefix.length).trim();
-        return `${base}${suffix}`;
+        return `${base.replace(/\s+/g, "-")}${suffix}`;
       }
     }
 
+    // ----------------------------
+    // Normal Pokémon
+    // ----------------------------
     return n.replace(/\s+/g, "-");
   }
 
   function pokeApiKeyForPokemon(p) {
-    // Prefer dex_number if backend provides it
+    const name = p?.pokemon_name ?? p?.name ?? null;
+
+    if (name) {
+      const slug = toPokeApiSlug(name);
+      if (slug) return slug;
+    }
+
+    // Fallback only if a name is unavailable.
     const dex = p?.dex_number;
     if (Number.isInteger(dex) && dex > 0) return String(dex);
 
-    // If your backend pokemon_id is actually natdex, you can use it too:
-    const pid = p?.pokemon_id;
-    if (Number.isInteger(pid) && pid > 0) return String(pid);
-
-    // Fallback: name slug logic
-    const name = p?.pokemon_name ?? p?.name ?? null;
-    return toPokeApiSlug(name);
+    return null;
   }
 
   async function preloadSprites(pokemonList) {
