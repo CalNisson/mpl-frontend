@@ -823,6 +823,41 @@ export async function cancelDraftMakeupPick(seasonId) {
 }
 
 // ----------------------------
+// Draft corrections (league master)
+// ----------------------------
+
+// Replace a drafted Pokemon, fill a skipped pick, or clear a pick.
+export async function correctDraftPick(seasonId, pickId, correction) {
+  const res = await apiFetch(
+    `/seasons/${seasonId}/draft/picks/${pickId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        pokemon_id:
+          correction.pokemon_id == null
+            ? null
+            : Number(correction.pokemon_id),
+        reason: String(correction.reason ?? "").trim(),
+      }),
+    }
+  );
+
+  return handle(res);
+}
+
+// Retrieve the correction history for a season.
+export async function listDraftCorrections(seasonId) {
+  const res = await apiFetch(
+    `/seasons/${seasonId}/draft/corrections`,
+    {
+      method: "GET",
+    }
+  );
+
+  return handle(res);
+}
+
+// ----------------------------
 // Season teams (delete) - FIXED
 // ----------------------------
 

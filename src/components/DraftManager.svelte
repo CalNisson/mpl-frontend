@@ -16,6 +16,8 @@
     listDraftMakeupPicks,
     startDraftMakeupPick,
     cancelDraftMakeupPick,
+    correctDraftPick,
+    listDraftCorrections,
     getSeasonTierList,
     patchSeasonTierListSettings,
   } from "../lib/api.js";
@@ -26,6 +28,51 @@
   let loading = true;
   let error = "";
   let msg = "";
+
+  // Historical draft corrections (league masters only)
+  let editDraftMode = false;
+  let editingPick = null;
+  let correctionPokemonId = "";
+  let correctionReason = "";
+  let correctionBusy = false;
+  let correctionError = "";
+  let correctionHistory = [];
+  let historyOpen = false;
+
+  function openCorrection(pick) {
+    editingPick = pick;
+    correctionPokemonId = pick.pokemon_id == null ? "" : String(pick.pokemon_id);
+    correctionReason = "";
+    correctionError = "";
+  }
+
+  async function saveCorrection() {
+    if (!editingPick || correctionBusy) return;
+    correctionBusy = true;
+    correctionError = "";
+    try {
+      await correctDraftPick(seasonId, editingPick.id, {
+        pokemon_id: correctionPokemonId === "" ? null : Number(correctionPokemonId),
+        reason: correctionReason.trim(),
+      });
+      editingPick = null;
+      correctionHistory = await listDraftCorrections(seasonId);
+      await loadAll({ silent: true });
+      setFlash("Draft pick corrected.");
+    } catch (e) {
+      correctionError = e?.message ?? String(e);
+    } finally {
+      correctionBusy = false;
+    }
+  }
+
+  async function toggleCorrectionHistory() {
+    historyOpen = !historyOpen;
+    if (historyOpen) {
+      try { correctionHistory = await listDraftCorrections(seasonId); }
+      catch (e) { setFlash(e?.message ?? String(e), true); }
+    }
+  }
 
   // Make-up picks
   let makeupOpen = false;
@@ -1064,6 +1111,26 @@
 
       <section class="card">
         <div class="h">Pick history</div>
+        {#if canEdit}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
+            <button class="btn" type="button" on:click={() => (editDraftMode = !editDraftMode)}>
+              {editDraftMode ? "Exit Draft Edit Mode" : "Draft Edit Mode"}
+            </button>
+            <button class="btn" type="button" on:click={toggleCorrectionHistory}>
+              {historyOpen ? "Hide correction history" : "Correction history"}
+            </button>
+          </div>
+        {/if}
+        {#if historyOpen}
+          <div class="history">
+            {#each correctionHistory as change (change.id)}
+              <div class="pickRow">
+                <div>Pick #{change.draft_pick_id}: {change.operation} ({change.old_pokemon_id ?? "skipped"} → {change.new_pokemon_id ?? "skipped"}) · {change.reason}</div>
+              </div>
+            {/each}
+            {#if correctionHistory.length === 0}<div class="muted">No corrections recorded.</div>{/if}
+          </div>
+        {/if}
         {#if (snapshot.picks ?? []).length === 0}
           <div class="muted">No picks yet.</div>
         {:else}
@@ -1083,6 +1150,9 @@
                   </div>
                 </div>
                 <div class="pickRound muted">R{p.round_number ?? "—"}</div>
+                {#if canEdit && editDraftMode}
+                  <button class="btn" type="button" on:click={() => openCorrection(p)}>Edit</button>
+                {/if}
               </div>
             {/each}
           </div>
@@ -1590,3 +1660,35 @@
     margin-top: 2px;
   }
 </style>
+
+{#if editingPick}
+  <div class="modalBackdrop" on:click={() => (editingPick = null)}>
+    <div class="modalCard" on:click|stopPropagation>
+      <div class="modalHeader">
+        <div class="modalTitle">Correct draft pick #{editingPick.pick_number ?? editingPick.id}</div>
+        <button class="btn" type="button" on:click={() => (editingPick = null)}>Close</button>
+      </div>
+      <p class="muted">Choose a Pokémon, or choose Clear / skipped to remove this pick. Draft must be paused or ended. Picks involved in later transactions cannot be changed.</p>
+      <label for="correctionPokemon">Pokémon</label>
+      <select
+        id="correctionPokemon"
+        class="select"
+        bind:value={correctionPokemonId}
+      >
+        <option value="">Clear / skipped</option>
+        {#each pool.filter((x) => !x.is_banned && !x.is_undraftable && (!draftedSet.has(x.pokemon_id) || x.pokemon_id === editingPick.pokemon_id)) as mon (mon.pokemon_id)}
+          <option value={String(mon.pokemon_id)}>{mon.pokemon_name} ({mon.points} pts)</option>
+        {/each}
+      </select>
+      <label for="correctionReason">Reason (required)</label>
+      <textarea id="correctionReason" bind:value={correctionReason} maxlength="1000" placeholder="Why is this pick being corrected?"></textarea>
+      {#if correctionError}<p class="error">{correctionError}</p>{/if}
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn" type="button" disabled={correctionBusy || !correctionReason.trim()} on:click={saveCorrection}>
+          {correctionBusy ? "Saving…" : "Save correction"}
+        </button>
+        <button class="btn" type="button" on:click={() => (editingPick = null)}>Cancel</button>
+      </div>
+    </div>
+  </div>
+{/if}
