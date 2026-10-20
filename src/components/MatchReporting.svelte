@@ -103,6 +103,7 @@ let loading = true;
     ["tatsugiri-droopy", "tatsugiri"],
     ["tatsugiri-curly", "tatsugiri"],
     ["tatsugiri-stretchy", "tatsugiri"],
+    ["floette-eternal", "floette-eternal-flower"],
   ]);
 
   function canonicalKeyFromName(name) {
