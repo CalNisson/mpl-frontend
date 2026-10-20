@@ -117,7 +117,7 @@ let loading = true;
     k = k.replace(/-mega-/g, "-");
 
     if (hadMega) {
-      k = k.replace(/-(x|y)$/, "");
+      k = k.replace(/-(x|y|z)$/, "");
     }
 
     // Your existing canonicals (keep)
